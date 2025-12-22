@@ -51,40 +51,37 @@ def create_meeting(
     if not (1 <= max_rounds <= 10):
         raise ValueError("Max rounds must be between 1 and 10")
 
-    db = get_sync_db()
-
-    try:
-        # Create meeting
-        meeting = Meeting(
-            topic=topic,
-            strategy=strategy.value,
-            max_rounds=max_rounds,
-            current_round=0,
-            status=MeetingStatus.CREATED.value,
-            convergence_detected=False,
-        )
-
-        db.add(meeting)
-        db.commit()
-        db.refresh(meeting)
-
-        logger.info("Created meeting %s: %s", meeting.id, topic)
-
-        # TODO: Sprint 2 - Auto-select agents if requested
-        if auto_select:
-            logger.info(
-                "Auto-selection of %d agents requested (deferred to Sprint 2)",
-                agent_count,
+    with get_sync_db() as db:
+        try:
+            # Create meeting
+            meeting = Meeting(
+                topic=topic,
+                strategy=strategy.value,
+                max_rounds=max_rounds,
+                current_round=0,
+                status=MeetingStatus.CREATED.value,
+                convergence_detected=False,
             )
 
-        return MeetingResponse.model_validate(meeting)
+            db.add(meeting)
+            db.commit()
+            db.refresh(meeting)
 
-    except Exception as e:
-        db.rollback()
-        logger.exception("Failed to create meeting")
-        raise ValueError(f"Failed to create meeting: {e!s}") from e
-    finally:
-        db.close()
+            logger.info("Created meeting %s: %s", meeting.id, topic)
+
+            # TODO: Sprint 2 - Auto-select agents if requested
+            if auto_select:
+                logger.info(
+                    "Auto-selection of %d agents requested (deferred to Sprint 2)",
+                    agent_count,
+                )
+
+            return MeetingResponse.model_validate(meeting)
+
+        except Exception as e:
+            db.rollback()
+            logger.exception("Failed to create meeting")
+            raise ValueError(f"Failed to create meeting: {e!s}") from e
 
 
 def run_meeting(meeting_id: UUID, interactive: bool) -> MeetingResponse:
@@ -104,42 +101,39 @@ def run_meeting(meeting_id: UUID, interactive: bool) -> MeetingResponse:
 
     from theboard.workflows.simple_meeting import SimpleMeetingWorkflow
 
-    db = get_sync_db()
+    with get_sync_db() as db:
+        try:
+            # Get meeting
+            stmt = select(Meeting).where(Meeting.id == meeting_id)
+            meeting = db.scalars(stmt).first()
 
-    try:
-        # Get meeting
-        stmt = select(Meeting).where(Meeting.id == meeting_id)
-        meeting = db.scalars(stmt).first()
+            if not meeting:
+                raise ValueError(f"Meeting not found: {meeting_id}")
 
-        if not meeting:
-            raise ValueError(f"Meeting not found: {meeting_id}")
+            if meeting.status not in [MeetingStatus.CREATED.value, MeetingStatus.PAUSED.value]:
+                raise ValueError(f"Meeting cannot be run in status: {meeting.status}")
 
-        if meeting.status not in [MeetingStatus.CREATED.value, MeetingStatus.PAUSED.value]:
-            raise ValueError(f"Meeting cannot be run in status: {meeting.status}")
-
-        # Update status
-        meeting.status = MeetingStatus.RUNNING.value
-        db.commit()
-
-        logger.info("Running meeting %s", meeting_id)
-
-        # Execute workflow
-        workflow = SimpleMeetingWorkflow(meeting_id)
-        asyncio.run(workflow.execute())
-
-        # Get updated meeting
-        db.refresh(meeting)
-
-        return MeetingResponse.model_validate(meeting)
-
-    except Exception as e:
-        if meeting:
-            meeting.status = MeetingStatus.FAILED.value
+            # Update status
+            meeting.status = MeetingStatus.RUNNING.value
             db.commit()
-        logger.exception("Failed to run meeting")
-        raise ValueError(f"Failed to run meeting: {e!s}") from e
-    finally:
-        db.close()
+
+            logger.info("Running meeting %s", meeting_id)
+
+            # Execute workflow
+            workflow = SimpleMeetingWorkflow(meeting_id)
+            asyncio.run(workflow.execute())
+
+            # Get updated meeting
+            db.refresh(meeting)
+
+            return MeetingResponse.model_validate(meeting)
+
+        except Exception as e:
+            if meeting:
+                meeting.status = MeetingStatus.FAILED.value
+                db.commit()
+            logger.exception("Failed to run meeting")
+            raise ValueError(f"Failed to run meeting: {e!s}") from e
 
 
 def get_meeting_status(meeting_id: UUID) -> MeetingStatusResponse:
@@ -154,77 +148,74 @@ def get_meeting_status(meeting_id: UUID) -> MeetingStatusResponse:
     Raises:
         ValueError: If meeting not found
     """
-    db = get_sync_db()
-
-    try:
-        # Get meeting with relationships
-        stmt = (
-            select(Meeting)
-            .options(
-                joinedload(Meeting.responses),
-                joinedload(Meeting.comments),
-                joinedload(Meeting.convergence_metrics),
-            )
-            .where(Meeting.id == meeting_id)
-        )
-        meeting = db.scalars(stmt).first()
-
-        if not meeting:
-            raise ValueError(f"Meeting not found: {meeting_id}")
-
-        # Get responses
-        response_stmt = (
-            select(Response)
-            .where(Response.meeting_id == meeting_id)
-            .order_by(Response.round, Response.created_at)
-        )
-        responses = db.scalars(response_stmt).all()
-
-        # Get recent comments (last 10)
-        comment_stmt = (
-            select(Comment)
-            .where(Comment.meeting_id == meeting_id)
-            .order_by(desc(Comment.created_at))
-            .limit(10)
-        )
-        comments = db.scalars(comment_stmt).all()
-
-        # Get convergence metrics
-        metric_stmt = (
-            select(ConvergenceMetric)
-            .where(ConvergenceMetric.meeting_id == meeting_id)
-            .order_by(ConvergenceMetric.round)
-        )
-        metrics = db.scalars(metric_stmt).all()
-
-        # Build response
-        return MeetingStatusResponse(
-            meeting=MeetingResponse.model_validate(meeting),
-            responses=[
-                ResponseSummary(
-                    id=r.id,
-                    meeting_id=r.meeting_id,
-                    agent_id=r.agent_id,
-                    round=r.round,
-                    agent_name=r.agent_name,
-                    response_text=r.response_text,
-                    model_used=r.model_used,
-                    tokens_used=r.tokens_used,
-                    cost=r.cost,
-                    comment_count=len([c for c in comments if c.response_id == r.id]),
-                    created_at=r.created_at,
+    with get_sync_db() as db:
+        try:
+            # Get meeting with relationships
+            stmt = (
+                select(Meeting)
+                .options(
+                    joinedload(Meeting.responses),
+                    joinedload(Meeting.comments),
+                    joinedload(Meeting.convergence_metrics),
                 )
-                for r in responses
-            ],
-            recent_comments=[CommentResponse.model_validate(c) for c in comments],
-            convergence_metrics=[ConvergenceMetricResponse.model_validate(m) for m in metrics],
-        )
+                .where(Meeting.id == meeting_id)
+            )
+            meeting = db.scalars(stmt).first()
 
-    except Exception as e:
-        logger.exception("Failed to get meeting status")
-        raise ValueError(f"Failed to get meeting status: {e!s}") from e
-    finally:
-        db.close()
+            if not meeting:
+                raise ValueError(f"Meeting not found: {meeting_id}")
+
+            # Get responses
+            response_stmt = (
+                select(Response)
+                .where(Response.meeting_id == meeting_id)
+                .order_by(Response.round, Response.created_at)
+            )
+            responses = db.scalars(response_stmt).all()
+
+            # Get recent comments (last 10)
+            comment_stmt = (
+                select(Comment)
+                .where(Comment.meeting_id == meeting_id)
+                .order_by(desc(Comment.created_at))
+                .limit(10)
+            )
+            comments = db.scalars(comment_stmt).all()
+
+            # Get convergence metrics
+            metric_stmt = (
+                select(ConvergenceMetric)
+                .where(ConvergenceMetric.meeting_id == meeting_id)
+                .order_by(ConvergenceMetric.round)
+            )
+            metrics = db.scalars(metric_stmt).all()
+
+            # Build response
+            return MeetingStatusResponse(
+                meeting=MeetingResponse.model_validate(meeting),
+                responses=[
+                    ResponseSummary(
+                        id=r.id,
+                        meeting_id=r.meeting_id,
+                        agent_id=r.agent_id,
+                        round=r.round,
+                        agent_name=r.agent_name,
+                        response_text=r.response_text,
+                        model_used=r.model_used,
+                        tokens_used=r.tokens_used,
+                        cost=r.cost,
+                        comment_count=len([c for c in comments if c.response_id == r.id]),
+                        created_at=r.created_at,
+                    )
+                    for r in responses
+                ],
+                recent_comments=[CommentResponse.model_validate(c) for c in comments],
+                convergence_metrics=[ConvergenceMetricResponse.model_validate(m) for m in metrics],
+            )
+
+        except Exception as e:
+            logger.exception("Failed to get meeting status")
+            raise ValueError(f"Failed to get meeting status: {e!s}") from e
 
 
 def delete_meeting(meeting_id: UUID) -> bool:
@@ -239,30 +230,28 @@ def delete_meeting(meeting_id: UUID) -> bool:
     Raises:
         ValueError: If meeting not found
     """
-    db = get_sync_db()
     redis = get_redis_manager()
 
-    try:
-        # Get meeting
-        stmt = select(Meeting).where(Meeting.id == meeting_id)
-        meeting = db.scalars(stmt).first()
+    with get_sync_db() as db:
+        try:
+            # Get meeting
+            stmt = select(Meeting).where(Meeting.id == meeting_id)
+            meeting = db.scalars(stmt).first()
 
-        if not meeting:
-            raise ValueError(f"Meeting not found: {meeting_id}")
+            if not meeting:
+                raise ValueError(f"Meeting not found: {meeting_id}")
 
-        # Delete from Redis
-        redis.delete_meeting_data(str(meeting_id))
+            # Delete from Redis
+            redis.delete_meeting_data(str(meeting_id))
 
-        # Delete from database (cascade will handle related records)
-        db.delete(meeting)
-        db.commit()
+            # Delete from database (cascade will handle related records)
+            db.delete(meeting)
+            db.commit()
 
-        logger.info("Deleted meeting %s", meeting_id)
-        return True
+            logger.info("Deleted meeting %s", meeting_id)
+            return True
 
-    except Exception as e:
-        db.rollback()
-        logger.exception("Failed to delete meeting")
-        raise ValueError(f"Failed to delete meeting: {e!s}") from e
-    finally:
-        db.close()
+        except Exception as e:
+            db.rollback()
+            logger.exception("Failed to delete meeting")
+            raise ValueError(f"Failed to delete meeting: {e!s}") from e

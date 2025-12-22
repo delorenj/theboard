@@ -1,4 +1,34 @@
 services:
+  # TheBoard Application
+  theboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: theboard-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgresql+psycopg://theboard:theboard_dev_pass@postgres:5432/theboard
+      - REDIS_URL=redis://:theboard_redis_pass@redis:6379
+      - RABBITMQ_URL=amqp://theboard:theboard_rabbit_pass@rabbitmq:5672
+      - QDRANT_URL=http://qdrant:6333
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    volumes:
+      - .:/app
+      - /app/.venv  # Prevent host .venv conflicts
+    working_dir: /app
+    command: tail -f /dev/null  # Keep running for CLI access
+    networks:
+      - theboard-network
+    restart: unless-stopped
+
   # PostgreSQL 15 - Persistent storage
   postgres:
     image: postgres:15-alpine
@@ -82,5 +112,5 @@ volumes:
     driver: local
 
 networks:
-  default:
-    name: theboard-network
+  theboard-network:
+    driver: bridge
