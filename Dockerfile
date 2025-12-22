@@ -11,14 +11,11 @@ RUN apt-get update && apt-get install -y \
 # Install uv for package management
 RUN pip install --no-cache-dir uv
 
-# Copy dependency files
-COPY pyproject.toml uv.lock ./
+# Copy application code first so local package is available
+COPY . .
 
 # Install dependencies
 RUN uv sync --frozen
-
-# Copy application code
-COPY . .
 
 # Set Python path
 ENV PYTHONPATH=/app/src

@@ -14,6 +14,7 @@ from typing import Any
 from agno.agent import Agent
 
 from theboard.agents.base import create_agno_agent, extract_agno_metrics
+from theboard.preferences import get_preferences_manager
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ class DomainExpertAgent:
         expertise: str,
         persona: str | None = None,
         background: str | None = None,
-        model: str = "claude-sonnet-4-20250514",
+        model: str | None = None,
         session_id: str | None = None,
     ) -> None:
         """Initialize Domain Expert Agent.
@@ -42,15 +43,21 @@ class DomainExpertAgent:
             expertise: Agent expertise description
             persona: Optional persona description
             background: Optional background information
-            model: LLM model to use
+            model: LLM model to use (defaults to preferences)
             session_id: Optional session ID for conversation persistence (meeting_id)
         """
         self.name = name
         self.expertise = expertise
         self.persona = persona
         self.background = background
-        self.model = model
         self.session_id = session_id
+
+        # Use preferences if model not provided
+        if model is None:
+            prefs = get_preferences_manager()
+            model = prefs.get_model_for_agent(agent_name=name, agent_type="domain_expert")
+
+        self.model = model
 
         # Agno Pattern: Build instructions list for the agent
         # Instructions guide the agent's behavior without system prompts

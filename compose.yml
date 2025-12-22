@@ -12,21 +12,23 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-      qdrant:
-        condition: service_healthy
     environment:
       - DATABASE_URL=postgresql+psycopg://theboard:theboard_dev_pass@postgres:5432/theboard
       - REDIS_URL=redis://:theboard_redis_pass@redis:6379
       - RABBITMQ_URL=amqp://theboard:theboard_rabbit_pass@rabbitmq:5672
-      - QDRANT_URL=http://qdrant:6333
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - QDRANT_URL=http://host.docker.internal:6333
+      - QDRANT_API_KEY=touchmyflappyfoldyholds
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
     volumes:
       - .:/app
-      - /app/.venv  # Prevent host .venv conflicts
+      - /app/.venv # Prevent host .venv conflicts
     working_dir: /app
-    command: tail -f /dev/null  # Keep running for CLI access
+    command: tail -f /dev/null # Keep running for CLI access
     networks:
       - theboard-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
   # PostgreSQL 15 - Persistent storage
@@ -41,6 +43,8 @@ services:
       - "${POSTGRES_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    networks:
+      - theboard-network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-theboard}"]
       interval: 10s
@@ -57,28 +61,12 @@ services:
       - "${REDIS_PORT:-6380}:6379"
     volumes:
       - redis_data:/data
+    networks:
+      - theboard-network
     healthcheck:
       test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
       interval: 10s
       timeout: 3s
-      retries: 5
-    restart: unless-stopped
-
-  # Qdrant - Vector database for embeddings
-  qdrant:
-    image: qdrant/qdrant:latest
-    container_name: theboard-qdrant
-    ports:
-      - "${QDRANT_PORT:-6335}:6333"
-      - "${QDRANT_GRPC_PORT:-6336}:6334"
-    volumes:
-      - qdrant_data:/qdrant/storage
-    environment:
-      QDRANT__SERVICE__GRPC_PORT: 6334
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
-      interval: 10s
-      timeout: 5s
       retries: 5
     restart: unless-stopped
 
@@ -94,6 +82,8 @@ services:
       - "${RABBITMQ_MANAGEMENT_PORT:-15673}:15672"
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - theboard-network
     healthcheck:
       test: ["CMD", "rabbitmqctl", "status"]
       interval: 10s
@@ -105,8 +95,6 @@ volumes:
   postgres_data:
     driver: local
   redis_data:
-    driver: local
-  qdrant_data:
     driver: local
   rabbitmq_data:
     driver: local

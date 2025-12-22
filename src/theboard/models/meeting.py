@@ -40,6 +40,7 @@ class Meeting(Base):
     )
     convergence_detected: Mapped[bool] = mapped_column(default=False, server_default="false")
     stopping_reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    model_override: Mapped[str | None] = mapped_column(String(100), nullable=True)  # CLI --model flag
 
     # Metadata
     context_size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

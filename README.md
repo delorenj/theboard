@@ -49,10 +49,10 @@ Copy the example environment file and configure:
 cp .env.example .env
 ```
 
-Edit `.env` and add your Anthropic API key:
+Edit `.env` and add your OpenRouter API key:
 
 ```bash
-ANTHROPIC_API_KEY=your_key_here
+OPENROUTER_API_KEY=your_key_here
 ```
 
 #### 3. Start all services
@@ -98,10 +98,10 @@ cd theboard
 cp .env.example .env
 ```
 
-Edit `.env` and add your Anthropic API key:
+Edit `.env` and add your OpenRouter API key:
 
 ```bash
-ANTHROPIC_API_KEY=your_key_here
+OPENROUTER_API_KEY=your_key_here
 ```
 
 #### 3. Start only infrastructure services
@@ -241,7 +241,7 @@ theboard/
 │   ├── unit/            # Unit tests
 │   └── integration/     # Integration tests
 ├── alembic/             # Database migrations
-├── docker-compose.yml   # Docker services
+├── compose.yml          # Docker services
 └── pyproject.toml       # Project configuration
 ```
 
@@ -343,7 +343,8 @@ mypy src/
 - **SQLAlchemy**: ORM and database toolkit
 - **Alembic**: Database migrations
 - **Pydantic**: Data validation
-- **Anthropic Claude**: LLM provider
+- **Agno**: Multi-agent framework for LLM orchestration
+- **OpenRouter**: LLM provider (unified access to Claude, GPT, etc.)
 - **PostgreSQL**: Persistent storage
 - **Redis**: Caching and state management
 - **Qdrant**: Vector database for embeddings

@@ -13,6 +13,7 @@ from typing import Any
 from agno.agent import Agent
 
 from theboard.agents.base import create_agno_agent, extract_agno_metrics
+from theboard.preferences import get_preferences_manager
 from theboard.schemas import Comment, CommentCategory, CommentList
 
 logger = logging.getLogger(__name__)
@@ -25,13 +26,22 @@ class NotetakerAgent:
     This eliminates manual JSON parsing and validation - Agno handles it automatically.
     """
 
-    def __init__(self, model: str = "claude-sonnet-4-20250514") -> None:
+    def __init__(self, model: str | None = None) -> None:
         """Initialize Notetaker Agent.
 
         Args:
-            model: LLM model to use for extraction
+            model: LLM model to use for extraction (defaults to preferences)
         """
         self.name = "Notetaker"
+
+        # Use preferences if model not provided
+        if model is None:
+            prefs = get_preferences_manager()
+            model = prefs.get_model_for_agent(
+                agent_name="notetaker",
+                agent_type="notetaker",
+            )
+
         self.model = model
 
         # Agno Pattern: Define instructions for structured extraction
