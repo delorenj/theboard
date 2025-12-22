@@ -14,6 +14,7 @@ from theboard.agents.domain_expert import DomainExpertAgent
 from theboard.agents.notetaker import NotetakerAgent
 from theboard.database import get_sync_db
 from theboard.models.meeting import Agent, Comment as DBComment, Meeting, Response
+from theboard.preferences import get_preferences_manager
 from theboard.schemas import MeetingStatus
 
 logger = logging.getLogger(__name__)
@@ -27,17 +28,26 @@ class SimpleMeetingWorkflow:
     is no longer needed for agent conversations (only for meeting coordination).
     """
 
-    def __init__(self, meeting_id: UUID) -> None:
+    def __init__(self, meeting_id: UUID, model_override: str | None = None) -> None:
         """Initialize workflow.
 
         Args:
             meeting_id: Meeting UUID
+            model_override: Optional CLI model override (--model flag)
         """
         self.meeting_id = meeting_id
+        self.model_override = model_override
 
         # Agno Pattern: Pass meeting_id as session_id for conversation persistence
         # Notetaker doesn't need session persistence as it's stateless extraction
-        self.notetaker = NotetakerAgent()
+        # Use model_override or preferences for notetaker
+        prefs = get_preferences_manager()
+        notetaker_model = prefs.get_model_for_agent(
+            agent_name="notetaker",
+            agent_type="notetaker",
+            cli_override=model_override,
+        )
+        self.notetaker = NotetakerAgent(model=notetaker_model)
 
     async def execute(self) -> None:
         """Execute the simple meeting workflow.
@@ -150,12 +160,20 @@ class SimpleMeetingWorkflow:
 
         # Agno Pattern: Create domain expert with session_id for persistence
         # The agent will automatically save conversation to PostgresDb
+        # Use preferences for model selection with full precedence hierarchy
+        prefs = get_preferences_manager()
+        model_to_use = prefs.get_model_for_agent(
+            agent_name=agent.name,
+            agent_type="domain_expert",
+            cli_override=self.model_override,
+        )
+
         expert = DomainExpertAgent(
             name=agent.name,
             expertise=agent.expertise,
             persona=agent.persona,
             background=agent.background,
-            model=agent.default_model,
+            model=model_to_use,
             session_id=str(meeting.id),  # Agno uses this for conversation persistence
         )
 

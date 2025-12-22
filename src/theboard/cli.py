@@ -10,6 +10,7 @@ from rich.logging import RichHandler
 from rich.panel import Panel
 from rich.table import Table
 
+from theboard.cli_commands.config import config_app
 from theboard.config import settings
 from theboard.schemas import MeetingStatus, StrategyType
 
@@ -19,6 +20,9 @@ app = typer.Typer(
     help="TheBoard - Multi-Agent Brainstorming Simulation System",
     add_completion=False,
 )
+
+# Register config command group
+app.add_typer(config_app, name="config")
 
 # Initialize Rich console
 console = Console()
@@ -51,6 +55,9 @@ def create(
     ),
     auto_select: bool = typer.Option(
         True, "--auto-select/--manual", help="Auto-select agents based on topic"
+    ),
+    model: str | None = typer.Option(
+        None, "--model", "-m", help="Override default model for this meeting"
     ),
 ) -> None:
     """Create a new brainstorming meeting.
@@ -85,6 +92,7 @@ def create(
                 max_rounds=max_rounds,
                 agent_count=agent_count if auto_select else 0,
                 auto_select=auto_select,
+                model_override=model,
             )
 
         # Display success
@@ -112,32 +120,133 @@ def create(
 
 @app.command()
 def run(
-    meeting_id: str = typer.Argument(..., help="Meeting ID to run"),
+    meeting_id: str | None = typer.Argument(None, help="Meeting ID to run (optional - shows selector if omitted)"),
     interactive: bool = typer.Option(
         False, "--interactive", "-i", help="Enable human-in-the-loop prompts"
+    ),
+    rerun: bool = typer.Option(
+        False, "--rerun", help="Reset and rerun a completed/failed meeting"
+    ),
+    fork: bool = typer.Option(
+        False, "--fork", help="Fork meeting (create new meeting with same parameters)"
+    ),
+    last: bool = typer.Option(
+        False, "--last", help="Run most recent meeting"
     ),
 ) -> None:
     """Run a brainstorming meeting.
 
     Executes the meeting with the configured strategy and agents.
     Displays real-time progress and results.
+
+    If no meeting ID is provided, shows an interactive selector.
+    Use --last to run the most recent meeting without selection.
+    Use --rerun to reset and rerun a completed/failed meeting (overwrites data).
+    Use --fork to create a new meeting with the same parameters (preserves history).
     """
     try:
         # Import here to avoid circular dependencies
-        from theboard.services.meeting_service import run_meeting
+        from rich.prompt import Prompt
+        from theboard.services.meeting_service import fork_meeting, list_recent_meetings, run_meeting
 
-        # Parse meeting ID
-        try:
-            uuid_id = UUID(meeting_id)
-        except ValueError as e:
-            console.print(f"[red]Error: Invalid meeting ID format: {meeting_id}[/red]")
-            raise typer.Exit(1) from e
+        # Mutual exclusivity check
+        if rerun and fork:
+            console.print(
+                "[red]Error: Cannot use --rerun and --fork together. Choose one.[/red]"
+            )
+            raise typer.Exit(1)
 
-        # Run meeting
-        console.print(f"\n[bold]Starting meeting {uuid_id}...[/bold]\n")
+        # Determine meeting ID
+        uuid_id: UUID
 
+        if meeting_id is None:
+            # No meeting ID provided - show selector or use --last
+            if last:
+                # Get most recent meeting
+                meetings = list_recent_meetings(limit=1)
+                if not meetings:
+                    console.print("[red]Error: No meetings found. Create one with 'board create'[/red]")
+                    raise typer.Exit(1)
+                uuid_id = meetings[0].id
+                console.print(f"[dim]Using most recent meeting:[/dim] {meetings[0].topic[:60]}")
+            else:
+                # Show interactive selector
+                meetings = list_recent_meetings(limit=20)
+                if not meetings:
+                    console.print("[red]Error: No meetings found. Create one with 'board create'[/red]")
+                    raise typer.Exit(1)
+
+                # Display meetings
+                console.print("\n[bold]Recent Meetings:[/bold]\n")
+                for i, meeting in enumerate(meetings, 1):
+                    status_color = {
+                        "created": "cyan",
+                        "running": "yellow",
+                        "paused": "blue",
+                        "completed": "green",
+                        "failed": "red",
+                    }.get(meeting.status.value, "white")
+
+                    # Format display based on status
+                    if meeting.status.value == "completed":
+                        details = f"${meeting.total_cost:.2f} - {meeting.current_round} rounds"
+                    elif meeting.status.value == "failed":
+                        details = f"${meeting.total_cost:.2f} - {meeting.current_round} rounds"
+                    else:
+                        details = "Ready to run"
+
+                    console.print(
+                        f"  {i}. {meeting.topic[:60]} "
+                        f"[{status_color}]({meeting.status.value})[/{status_color}] "
+                        f"[dim]- {details}[/dim]"
+                    )
+
+                # Get user choice
+                choice = Prompt.ask(
+                    "\n[bold]Select meeting[/bold]",
+                    choices=[str(i) for i in range(1, len(meetings) + 1)],
+                    default="1"
+                )
+                selected = meetings[int(choice) - 1]
+                uuid_id = selected.id
+                console.print(f"[dim]Selected:[/dim] {selected.topic[:60]}\n")
+        else:
+            # Meeting ID provided - parse it
+            try:
+                uuid_id = UUID(meeting_id)
+            except ValueError as e:
+                console.print(f"[red]Error: Invalid meeting ID format: {meeting_id}[/red]")
+                raise typer.Exit(1) from e
+
+        # Handle fork: create new meeting with same parameters
+        if fork:
+            console.print(f"\n[bold]Forking meeting {uuid_id}...[/bold]\n")
+            with console.status("[bold cyan]Creating fork...", spinner="dots"):
+                forked = fork_meeting(meeting_id=uuid_id)
+
+            console.print(
+                Panel.fit(
+                    f"[cyan]✓[/cyan] Meeting forked!\n\n"
+                    f"[bold]Original ID:[/bold] {uuid_id}\n"
+                    f"[bold]Forked ID:[/bold] {forked.id}\n"
+                    f"[bold]Topic:[/bold] {forked.topic}",
+                    title="[bold cyan]Meeting Forked[/bold cyan]",
+                    border_style="cyan",
+                )
+            )
+
+            # Use the forked meeting ID for running
+            uuid_id = forked.id
+            console.print(f"\n[bold]Running forked meeting {uuid_id}...[/bold]\n")
+
+        else:
+            # Regular run or rerun
+            action = "Rerunning" if rerun else "Starting"
+            console.print(f"\n[bold]{action} meeting {uuid_id}...[/bold]\n")
+
+        # Run meeting (with rerun flag if specified)
         with console.status("[bold green]Running meeting...", spinner="dots"):
-            result = run_meeting(meeting_id=uuid_id, interactive=interactive)
+            result = run_meeting(meeting_id=uuid_id, interactive=interactive, rerun=rerun)
 
         # Display completion
         console.print(
@@ -158,7 +267,7 @@ def run(
         )
 
         console.print(
-            f"\n[dim]View details with:[/dim] [bold]board status {meeting_id}[/bold]"
+            f"\n[dim]View details with:[/dim] [bold]board status {uuid_id}[/bold]"
         )
 
     except Exception as e:

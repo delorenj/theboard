@@ -3,7 +3,7 @@
 import logging
 from uuid import UUID
 
-from sqlalchemy import desc, select
+from sqlalchemy import delete, desc, select
 from sqlalchemy.orm import joinedload
 
 from theboard.database import get_sync_db
@@ -28,6 +28,7 @@ def create_meeting(
     max_rounds: int,
     agent_count: int,
     auto_select: bool,
+    model_override: str | None = None,
 ) -> MeetingResponse:
     """Create a new brainstorming meeting.
 
@@ -37,6 +38,7 @@ def create_meeting(
         max_rounds: Maximum number of rounds
         agent_count: Number of agents to select (if auto_select)
         auto_select: Whether to auto-select agents based on topic
+        model_override: CLI model override (--model flag)
 
     Returns:
         MeetingResponse with created meeting details
@@ -53,7 +55,7 @@ def create_meeting(
 
     with get_sync_db() as db:
         try:
-            # Create meeting
+            # Create meeting with model override
             meeting = Meeting(
                 topic=topic,
                 strategy=strategy.value,
@@ -61,6 +63,7 @@ def create_meeting(
                 current_round=0,
                 status=MeetingStatus.CREATED.value,
                 convergence_detected=False,
+                model_override=model_override,  # Store CLI override for workflow
             )
 
             db.add(meeting)
@@ -84,12 +87,13 @@ def create_meeting(
             raise ValueError(f"Failed to create meeting: {e!s}") from e
 
 
-def run_meeting(meeting_id: UUID, interactive: bool) -> MeetingResponse:
+def run_meeting(meeting_id: UUID, interactive: bool, rerun: bool = False) -> MeetingResponse:
     """Run a brainstorming meeting.
 
     Args:
         meeting_id: Meeting UUID
         interactive: Enable human-in-the-loop prompts
+        rerun: Reset completed/failed meetings to rerun them
 
     Returns:
         MeetingResponse with final meeting state
@@ -110,6 +114,25 @@ def run_meeting(meeting_id: UUID, interactive: bool) -> MeetingResponse:
             if not meeting:
                 raise ValueError(f"Meeting not found: {meeting_id}")
 
+            # Handle rerun: reset completed/failed meetings
+            if rerun and meeting.status in [MeetingStatus.COMPLETED.value, MeetingStatus.FAILED.value]:
+                logger.info("Resetting meeting %s for rerun", meeting_id)
+                meeting.status = MeetingStatus.CREATED.value
+                meeting.current_round = 0
+                meeting.stopping_reason = None
+                meeting.convergence_detected = False
+                meeting.context_size = 0
+                meeting.total_comments = 0
+                meeting.total_cost = 0.0
+
+                # Delete previous responses, comments, and metrics
+                db.execute(delete(Response).where(Response.meeting_id == meeting_id))
+                db.execute(delete(Comment).where(Comment.meeting_id == meeting_id))
+                db.execute(delete(ConvergenceMetric).where(ConvergenceMetric.meeting_id == meeting_id))
+
+                db.commit()
+                db.refresh(meeting)
+
             if meeting.status not in [MeetingStatus.CREATED.value, MeetingStatus.PAUSED.value]:
                 raise ValueError(f"Meeting cannot be run in status: {meeting.status}")
 
@@ -119,8 +142,8 @@ def run_meeting(meeting_id: UUID, interactive: bool) -> MeetingResponse:
 
             logger.info("Running meeting %s", meeting_id)
 
-            # Execute workflow
-            workflow = SimpleMeetingWorkflow(meeting_id)
+            # Execute workflow with model override
+            workflow = SimpleMeetingWorkflow(meeting_id, model_override=meeting.model_override)
             asyncio.run(workflow.execute())
 
             # Get updated meeting
@@ -134,6 +157,88 @@ def run_meeting(meeting_id: UUID, interactive: bool) -> MeetingResponse:
                 db.commit()
             logger.exception("Failed to run meeting")
             raise ValueError(f"Failed to run meeting: {e!s}") from e
+
+
+def fork_meeting(meeting_id: UUID) -> MeetingResponse:
+    """Fork a meeting, creating a new meeting with the same parameters.
+
+    Args:
+        meeting_id: Meeting UUID to fork from
+
+    Returns:
+        MeetingResponse with newly created meeting
+
+    Raises:
+        ValueError: If source meeting not found
+    """
+    with get_sync_db() as db:
+        try:
+            # Get source meeting
+            stmt = select(Meeting).where(Meeting.id == meeting_id)
+            source_meeting = db.scalars(stmt).first()
+
+            if not source_meeting:
+                raise ValueError(f"Meeting not found: {meeting_id}")
+
+            # Create forked meeting with same parameters
+            forked_meeting = Meeting(
+                topic=source_meeting.topic,
+                strategy=source_meeting.strategy,
+                max_rounds=source_meeting.max_rounds,
+                current_round=0,
+                status=MeetingStatus.CREATED.value,
+                convergence_detected=False,
+                model_override=source_meeting.model_override,
+                context_size=0,
+                total_comments=0,
+                total_cost=0.0,
+            )
+
+            db.add(forked_meeting)
+            db.commit()
+            db.refresh(forked_meeting)
+
+            logger.info(
+                "Forked meeting %s -> %s (topic: %s)",
+                meeting_id,
+                forked_meeting.id,
+                source_meeting.topic,
+            )
+
+            return MeetingResponse.model_validate(forked_meeting)
+
+        except Exception as e:
+            db.rollback()
+            logger.exception("Failed to fork meeting")
+            raise ValueError(f"Failed to fork meeting: {e!s}") from e
+
+
+def list_recent_meetings(limit: int = 20) -> list[MeetingResponse]:
+    """Get recent meetings for selection.
+
+    Args:
+        limit: Maximum number of meetings to return (default 20)
+
+    Returns:
+        List of recent meetings, sorted by creation date descending
+
+    Raises:
+        ValueError: If query fails
+    """
+    with get_sync_db() as db:
+        try:
+            stmt = (
+                select(Meeting)
+                .order_by(desc(Meeting.created_at))
+                .limit(limit)
+            )
+            meetings = db.scalars(stmt).all()
+
+            return [MeetingResponse.model_validate(m) for m in meetings]
+
+        except Exception as e:
+            logger.exception("Failed to list recent meetings")
+            raise ValueError(f"Failed to list recent meetings: {e!s}") from e
 
 
 def get_meeting_status(meeting_id: UUID) -> MeetingStatusResponse:

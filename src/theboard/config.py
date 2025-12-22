@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
     qdrant_url: str = "http://localhost:6333"
+    qdrant_api_key: str = ""
 
     # RabbitMQ
     rabbitmq_host: str = "localhost"
@@ -51,8 +52,9 @@ class Settings(BaseSettings):
     rabbitmq_password: str = "theboard_rabbit_pass"
     rabbitmq_url: str = "amqp://theboard:theboard_rabbit_pass@localhost:5672/"
 
-    # LLM Provider
-    anthropic_api_key: str = ""
+    # LLM Provider - OpenRouter
+    openrouter_api_key: str = ""
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
     # Agent Configuration
     max_rounds: int = 5

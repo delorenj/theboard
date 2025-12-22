@@ -10,9 +10,10 @@ from typing import Any
 
 from agno.agent import Agent
 from agno.db.postgres import PostgresDb
-from agno.models.anthropic import Claude
+from agno.models.openrouter import OpenRouter
 
 from theboard.config import settings
+from theboard.preferences import get_preferences_manager
 
 logger = logging.getLogger(__name__)
 
@@ -37,10 +38,12 @@ def create_agno_agent(
     role: str,
     expertise: str,
     instructions: list[str],
-    model_id: str = "claude-sonnet-4-20250514",
+    model_id: str | None = None,
+    agent_type: str = "worker",
     session_id: str | None = None,
     output_schema: type | None = None,
     debug_mode: bool = False,
+    model_override: str | None = None,
 ) -> Agent:
     """Create an Agno Agent with TheBoard configuration.
 
@@ -56,18 +59,29 @@ def create_agno_agent(
         role: Agent role description
         expertise: Domain expertise description
         instructions: List of specific instructions for the agent
-        model_id: Claude model ID to use
+        model_id: OpenRouter model ID (optional, uses preferences if None)
+        agent_type: Agent type for preference lookup (worker, leader, notetaker, compressor)
         session_id: Optional session ID for persistence (typically meeting_id)
         output_schema: Optional Pydantic model for structured output
         debug_mode: Enable debug logging for Agno
+        model_override: CLI flag override (highest precedence)
 
     Returns:
         Configured Agno Agent instance
     """
-    # Agno Pattern: Claude model wrapper instead of direct Anthropic client
-    model = Claude(
+    # Model selection with precedence logic
+    if model_id is None:
+        manager = get_preferences_manager()
+        model_id = manager.get_model_for_agent(
+            agent_name=name,
+            agent_type=agent_type,
+            cli_override=model_override,
+        )
+    # Agno Pattern: OpenRouter model for unified LLM access
+    model = OpenRouter(
         id=model_id,
-        api_key=settings.anthropic_api_key,
+        api_key=settings.openrouter_api_key,
+        base_url=settings.openrouter_base_url,
     )
 
     # Agno Pattern: Build complete description combining role and expertise
