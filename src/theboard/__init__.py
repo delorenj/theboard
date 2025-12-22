@@ -1,2 +1,5 @@
-def main() -> None:
-    print("Hello from theboard!")
+"""TheBoard - Multi-Agent Brainstorming Simulation System."""
+
+__version__ = "0.1.0"
+
+__all__ = ["__version__"]
