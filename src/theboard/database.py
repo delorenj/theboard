@@ -1,7 +1,7 @@
 """Database connection and session management."""
 
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator, Generator
+from contextlib import asynccontextmanager, contextmanager
 
 from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -43,11 +43,12 @@ AsyncSessionLocal = async_sessionmaker(
 )
 
 
-def get_sync_db() -> Session:
-    """Get synchronous database session."""
+@contextmanager
+def get_sync_db() -> Generator[Session, None, None]:
+    """Get synchronous database session context manager."""
     db = SyncSessionLocal()
     try:
-        return db
+        yield db
     finally:
         db.close()
 

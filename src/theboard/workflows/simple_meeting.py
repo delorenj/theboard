@@ -34,7 +34,6 @@ class SimpleMeetingWorkflow:
             meeting_id: Meeting UUID
         """
         self.meeting_id = meeting_id
-        self.db = get_sync_db()
 
         # Agno Pattern: Pass meeting_id as session_id for conversation persistence
         # Notetaker doesn't need session persistence as it's stateless extraction
@@ -50,43 +49,45 @@ class SimpleMeetingWorkflow:
             ValueError: If meeting not found or invalid state
             RuntimeError: If workflow execution fails
         """
-        try:
-            # Get meeting
-            stmt = select(Meeting).where(Meeting.id == self.meeting_id)
-            meeting = self.db.scalars(stmt).first()
+        with get_sync_db() as db:
+            try:
+                # Get meeting
+                stmt = select(Meeting).where(Meeting.id == self.meeting_id)
+                meeting = db.scalars(stmt).first()
 
-            if not meeting:
-                raise ValueError(f"Meeting not found: {self.meeting_id}")
+                if not meeting:
+                    raise ValueError(f"Meeting not found: {self.meeting_id}")
 
-            if meeting.status != MeetingStatus.RUNNING.value:
-                raise ValueError(f"Meeting not in RUNNING state: {meeting.status}")
+                if meeting.status != MeetingStatus.RUNNING.value:
+                    raise ValueError(f"Meeting not in RUNNING state: {meeting.status}")
 
-            logger.info("Executing simple workflow for meeting %s", self.meeting_id)
+                logger.info("Executing simple workflow for meeting %s", self.meeting_id)
 
-            # For Sprint 1: Create a single test agent
-            # In Sprint 2, this will be replaced with agent pool selection
-            test_agent = await self._get_or_create_test_agent()
+                # For Sprint 1: Create a single test agent
+                # In Sprint 2, this will be replaced with agent pool selection
+                test_agent = await self._get_or_create_test_agent(db)
 
-            # Execute single round
-            await self._execute_round(meeting, test_agent, round_num=1)
+                # Execute single round
+                await self._execute_round(db, meeting, test_agent, round_num=1)
 
-            # Update meeting status
-            meeting.status = MeetingStatus.COMPLETED.value
-            meeting.current_round = 1
-            meeting.stopping_reason = "Single round completed (Sprint 1 MVP)"
-            self.db.commit()
+                # Update meeting status
+                meeting.status = MeetingStatus.COMPLETED.value
+                meeting.current_round = 1
+                meeting.stopping_reason = "Single round completed (Sprint 1 MVP)"
+                db.commit()
 
-            logger.info("Simple workflow completed for meeting %s", self.meeting_id)
+                logger.info("Simple workflow completed for meeting %s", self.meeting_id)
 
-        except Exception as e:
-            self.db.rollback()
-            logger.exception("Simple workflow failed")
-            raise RuntimeError(f"Workflow execution failed: {e!s}") from e
-        finally:
-            self.db.close()
+            except Exception as e:
+                db.rollback()
+                logger.exception("Simple workflow failed")
+                raise RuntimeError(f"Workflow execution failed: {e!s}") from e
 
-    async def _get_or_create_test_agent(self) -> Agent:
+    async def _get_or_create_test_agent(self, db) -> Agent:
         """Get or create a test agent for Sprint 1.
+
+        Args:
+            db: Database session
 
         Returns:
             Agent instance from database
@@ -96,7 +97,7 @@ class SimpleMeetingWorkflow:
         """
         # Check if test agent exists
         stmt = select(Agent).where(Agent.name == "test-architect")
-        agent = self.db.scalars(stmt).first()
+        agent = db.scalars(stmt).first()
 
         if agent:
             return agent
@@ -112,15 +113,15 @@ class SimpleMeetingWorkflow:
             is_active=True,
         )
 
-        self.db.add(agent)
-        self.db.commit()
-        self.db.refresh(agent)
+        db.add(agent)
+        db.commit()
+        db.refresh(agent)
 
         logger.info("Created test agent: %s", agent.name)
         return agent
 
     async def _execute_round(
-        self, meeting: Meeting, agent: Agent, round_num: int
+        self, db, meeting: Meeting, agent: Agent, round_num: int
     ) -> None:
         """Execute a single round with one agent.
 
@@ -129,6 +130,7 @@ class SimpleMeetingWorkflow:
         PostgresDb, allowing the agent to maintain context across rounds.
 
         Args:
+            db: Database session
             meeting: Meeting instance
             agent: Agent instance
             round_num: Round number
@@ -174,9 +176,9 @@ class SimpleMeetingWorkflow:
             context_size=len(context),
         )
 
-        self.db.add(response)
-        self.db.commit()
-        self.db.refresh(response)
+        db.add(response)
+        db.commit()
+        db.refresh(response)
 
         logger.info(
             "Stored response from %s: %d tokens, $%.4f",
@@ -203,9 +205,9 @@ class SimpleMeetingWorkflow:
                 support_count=1,
                 is_merged=False,
             )
-            self.db.add(db_comment)
+            db.add(db_comment)
 
-        self.db.commit()
+        db.commit()
 
         logger.info(
             "Extracted and stored %d comments from %s (notetaker: %d tokens, $%.4f)",
@@ -223,6 +225,6 @@ class SimpleMeetingWorkflow:
         # Note: Redis state management for meeting coordination could be added here
         # if needed, but agent conversation state is now in Agno's PostgresDb
 
-        self.db.commit()
+        db.commit()
 
         logger.info("Round %d completed successfully", round_num)

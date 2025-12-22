@@ -30,14 +30,18 @@ TheBoard implements a layered architecture:
 
 ## Installation
 
-### 1. Clone the repository
+### Option 1: Run with Docker (Recommended)
+
+The easiest way to run TheBoard is using Docker Compose, which includes the application and all required services.
+
+#### 1. Clone the repository
 
 ```bash
 git clone <repository-url>
 cd theboard
 ```
 
-### 2. Set up environment
+#### 2. Set up environment
 
 Copy the example environment file and configure:
 
@@ -51,25 +55,69 @@ Edit `.env` and add your Anthropic API key:
 ANTHROPIC_API_KEY=your_key_here
 ```
 
-### 3. Start Docker services
+#### 3. Start all services
 
 ```bash
 docker compose up -d
 ```
 
 This starts:
+- TheBoard application container
 - PostgreSQL (port 5433)
 - Redis (port 6380)
 - Qdrant (ports 6335, 6336)
 - RabbitMQ (ports 5673, 15673)
 
-### 4. Install Python dependencies
+#### 4. Run CLI commands in container
+
+```bash
+# Create a meeting
+docker compose exec theboard uv run board create --topic "Your brainstorming topic"
+
+# Run a meeting
+docker compose exec theboard uv run board run --meeting-id <meeting-id>
+
+# Check meeting status
+docker compose exec theboard uv run board status --meeting-id <meeting-id>
+```
+
+### Option 2: Local Development
+
+For local development with hot-reloading, you can run just the infrastructure in Docker and the app locally.
+
+#### 1. Clone the repository
+
+```bash
+git clone <repository-url>
+cd theboard
+```
+
+#### 2. Set up environment
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` and add your Anthropic API key:
+
+```bash
+ANTHROPIC_API_KEY=your_key_here
+```
+
+#### 3. Start only infrastructure services
+
+```bash
+# Start Postgres, Redis, RabbitMQ, Qdrant
+docker compose up -d postgres redis rabbitmq qdrant
+```
+
+#### 4. Install Python dependencies
 
 ```bash
 uv sync
 ```
 
-### 5. Run database migrations
+#### 5. Run database migrations
 
 ```bash
 source .venv/bin/activate
@@ -78,10 +126,12 @@ alembic upgrade head
 
 ## Usage
 
-### Create a Meeting
+### Running with Docker
+
+#### Create a Meeting
 
 ```bash
-board create --topic "Microservices vs Monolith architecture" --max-rounds 1
+docker compose exec theboard uv run board create --topic "Microservices vs Monolith architecture" --max-rounds 1
 ```
 
 Options:
@@ -91,32 +141,64 @@ Options:
 - `--agent-count, -n`: Number of agents to auto-select (default: 5)
 - `--auto-select/--manual`: Auto-select agents based on topic (default: auto-select)
 
-### Run a Meeting
+#### Run a Meeting
 
 ```bash
-board run <meeting-id>
+docker compose exec theboard uv run board run <meeting-id>
 ```
 
 Options:
 - `--interactive, -i`: Enable human-in-the-loop prompts (Sprint 4 feature)
 
-### Check Meeting Status
+#### Check Meeting Status
 
 ```bash
-board status <meeting-id>
+docker compose exec theboard uv run board status <meeting-id>
 ```
 
 Options:
 - `--comments/--no-comments`: Show/hide recent comments (default: show)
 - `--metrics/--no-metrics`: Show/hide convergence metrics (default: show)
 
-### Display Version
+#### Display Version
 
 ```bash
-board version
+docker compose exec theboard uv run board version
+```
+
+### Running Locally
+
+If you're running the app locally (not in Docker):
+
+```bash
+# Create a meeting
+board create --topic "Microservices vs Monolith architecture" --max-rounds 1
+
+# Run a meeting
+board run <meeting-id>
+
+# Check status
+board status <meeting-id>
 ```
 
 ## Example Workflow
+
+### With Docker
+
+```bash
+# Create a meeting
+docker compose exec theboard uv run board create --topic "API design: REST vs GraphQL vs gRPC for mobile apps" --max-rounds 1
+
+# Output: Meeting ID: 550e8400-e29b-41d4-a716-446655440000
+
+# Run the meeting
+docker compose exec theboard uv run board run 550e8400-e29b-41d4-a716-446655440000
+
+# Check status and comments
+docker compose exec theboard uv run board status 550e8400-e29b-41d4-a716-446655440000
+```
+
+### Local Development
 
 ```bash
 # Create a meeting
