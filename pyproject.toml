@@ -1,17 +1,99 @@
 [project]
 name = "theboard"
 version = "0.1.0"
-description = "Toss around some ideas"
+description = "Multi-Agent Brainstorming Simulation System"
 readme = "README.md"
 authors = [
     { name = "Jarad DeLorenzo", email = "jaradd@gmail.com" }
 ]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    # CLI and UI
+    "typer>=0.12.0",
+    "rich>=13.7.0",
+
+    # Agent orchestration
+    "agno>=0.4.0",
+
+    # LLM providers
+    "anthropic>=0.34.0",
+
+    # Database and caching
+    "sqlalchemy>=2.0.0",
+    "alembic>=1.13.0",
+    "psycopg[binary]>=3.1.0",
+    "redis>=5.0.0",
+
+    # Vector database
+    "qdrant-client>=1.11.0",
+
+    # Message broker
+    "aiormq>=6.8.0",
+
+    # Data validation
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.5.0",
+
+    # Embeddings
+    "sentence-transformers>=3.0.0",
+
+    # Utilities
+    "python-dotenv>=1.0.0",
+    "tenacity>=8.5.0",
+    "asyncio>=3.4.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "pytest-mock>=3.12.0",
+    "mypy>=1.8.0",
+    "ruff>=0.6.0",
+    "httpx>=0.27.0",
+]
 
 [project.scripts]
-theboard = "theboard:main"
+board = "theboard.cli:app"
 
 [build-system]
 requires = ["uv_build>=0.9.7,<0.10.0"]
 build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "I", "N", "W", "UP", "ANN", "B", "A", "C4", "DTZ", "T10", "DJ", "EM", "EXE", "ISC", "ICN", "G", "INP", "PIE", "T20", "PT", "Q", "RSE", "RET", "SLF", "SIM", "TID", "TCH", "ARG", "PTH", "ERA", "PD", "PGH", "PL", "TRY", "NPY", "RUF"]
+ignore = ["ANN101", "ANN102", "ANN401"]
+
+[tool.ruff.per-file-ignores]
+"tests/*" = ["S101", "PLR2004"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "--cov=theboard --cov-report=term-missing --cov-report=html"
+
+[tool.coverage.run]
+source = ["theboard"]
+omit = ["tests/*", "**/__init__.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
