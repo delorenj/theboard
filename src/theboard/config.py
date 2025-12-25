@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     environment: Literal["development", "staging", "production"] = "development"
     log_level: str = "INFO"
     debug: bool = True
+    testing: bool = False
+
+    # Event-Driven Architecture
+    event_emitter: Literal["null", "rabbitmq", "inmemory"] = "null"
 
     # Database
     postgres_user: str = "theboard"

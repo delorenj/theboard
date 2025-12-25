@@ -15,6 +15,15 @@ from sqlalchemy import select
 from theboard.agents.domain_expert import DomainExpertAgent
 from theboard.agents.notetaker import NotetakerAgent
 from theboard.database import get_sync_db
+from theboard.events import (
+    CommentExtractedEvent,
+    MeetingCompletedEvent,
+    MeetingConvergedEvent,
+    MeetingFailedEvent,
+    MeetingStartedEvent,
+    RoundCompletedEvent,
+    get_event_emitter,
+)
 from theboard.models.meeting import Agent, Comment as DBComment, Meeting, Response
 from theboard.preferences import get_preferences_manager
 from theboard.schemas import MeetingStatus
@@ -49,6 +58,9 @@ class MultiAgentMeetingWorkflow:
         self.meeting_id = meeting_id
         self.model_override = model_override
         self.novelty_threshold = novelty_threshold
+
+        # Initialize event emitter (Sprint 2.5)
+        self.emitter = get_event_emitter()
 
         # Initialize notetaker (stateless, doesn't need session persistence)
         prefs = get_preferences_manager()
@@ -109,6 +121,15 @@ class MultiAgentMeetingWorkflow:
 
                 logger.info("Selected %d agents for meeting", len(agents))
 
+                # Emit meeting started event (Sprint 2.5)
+                self.emitter.emit(
+                    MeetingStartedEvent(
+                        meeting_id=self.meeting_id,
+                        selected_agents=[agent.name for agent in agents],
+                        agent_count=len(agents),
+                    )
+                )
+
             except Exception as e:
                 db.rollback()
                 logger.exception("Failed to initialize multi-agent workflow")
@@ -132,6 +153,23 @@ class MultiAgentMeetingWorkflow:
                         self.novelty_threshold,
                     )
                     converged = True
+
+                    # Emit convergence event (Sprint 2.5)
+                    # Need to get total comments count for the event
+                    with get_sync_db() as convergence_db:
+                        convergence_stmt = select(Meeting).where(Meeting.id == self.meeting_id)
+                        convergence_meeting = convergence_db.scalars(convergence_stmt).first()
+                        if convergence_meeting:
+                            self.emitter.emit(
+                                MeetingConvergedEvent(
+                                    meeting_id=self.meeting_id,
+                                    round_num=round_num,
+                                    avg_novelty=avg_novelty,
+                                    novelty_threshold=self.novelty_threshold,
+                                    total_comments=convergence_meeting.total_comments,
+                                )
+                            )
+
                     break
 
             # Update meeting status
@@ -150,6 +188,18 @@ class MultiAgentMeetingWorkflow:
                     )
                     final_db.commit()
 
+                    # Emit meeting completed event (Sprint 2.5)
+                    self.emitter.emit(
+                        MeetingCompletedEvent(
+                            meeting_id=self.meeting_id,
+                            total_rounds=round_num,
+                            total_comments=final_meeting.total_comments,
+                            total_cost=final_meeting.total_cost,
+                            convergence_detected=converged,
+                            stopping_reason=final_meeting.stopping_reason,
+                        )
+                    )
+
                 logger.info(
                     "Multi-agent workflow completed for meeting %s (converged=%s)",
                     self.meeting_id,
@@ -165,6 +215,18 @@ class MultiAgentMeetingWorkflow:
                     failed_meeting.status = MeetingStatus.FAILED.value
                     failed_meeting.stopping_reason = f"Workflow error: {e!s}"
                     error_db.commit()
+
+                    # Emit meeting failed event (Sprint 2.5)
+                    self.emitter.emit(
+                        MeetingFailedEvent(
+                            meeting_id=self.meeting_id,
+                            error_type=type(e).__name__,
+                            error_message=str(e),
+                            round_num=failed_meeting.current_round,
+                            agent_name=None,  # Workflow-level failure
+                        )
+                    )
+
             logger.exception("Multi-agent workflow failed")
             raise RuntimeError(f"Workflow execution failed: {e!s}") from e
 
@@ -322,6 +384,53 @@ class MultiAgentMeetingWorkflow:
             len(agents),
             avg_novelty,
         )
+
+        # Emit round completed event (Sprint 2.5)
+        # Get round metrics for event payload
+        with get_sync_db() as round_db:
+            # Get responses for this round to calculate metrics
+            response_stmt = (
+                select(Response)
+                .where(Response.meeting_id == self.meeting_id)
+                .where(Response.round == round_num)
+            )
+            round_responses = round_db.scalars(response_stmt).all()
+
+            # Get comments for this round
+            comment_stmt = (
+                select(DBComment)
+                .where(DBComment.meeting_id == self.meeting_id)
+                .where(DBComment.round == round_num)
+            )
+            round_comments = round_db.scalars(comment_stmt).all()
+
+            # Calculate round metrics
+            total_tokens = sum(r.tokens_used for r in round_responses)
+            total_cost = sum(r.cost for r in round_responses)
+            total_response_length = sum(len(r.response_text) for r in round_responses)
+            comment_count = len(round_comments)
+
+            # Emit event for each agent in the round
+            for response in round_responses:
+                agent_comments = [c for c in round_comments if c.agent_name == response.agent_name]
+                agent_avg_novelty = (
+                    sum(c.novelty_score for c in agent_comments) / len(agent_comments)
+                    if agent_comments
+                    else 0.0
+                )
+
+                self.emitter.emit(
+                    RoundCompletedEvent(
+                        meeting_id=self.meeting_id,
+                        round_num=round_num,
+                        agent_name=response.agent_name,
+                        response_length=len(response.response_text),
+                        comment_count=len(agent_comments),
+                        avg_novelty=agent_avg_novelty,
+                        tokens_used=response.tokens_used,
+                        cost=response.cost,
+                    )
+                )
 
         return avg_novelty
 
