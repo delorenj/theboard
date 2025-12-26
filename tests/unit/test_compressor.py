@@ -13,7 +13,6 @@ Tests cover:
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
-import pytest
 from agno.agent import Agent as AgnoAgent
 
 from theboard.agents.compressor import CompressionMetrics, CompressorAgent
