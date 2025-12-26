@@ -166,7 +166,7 @@ class EmbeddingService:
         Raises:
             ValueError: If input lists have mismatched lengths
         """
-        if len(comment_ids) != len(texts) != len(agent_names):
+        if not (len(comment_ids) == len(texts) == len(agent_names)):
             raise ValueError("Mismatched input lengths")
 
         if not texts:
