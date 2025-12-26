@@ -12,12 +12,14 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      qdrant:
+        condition: service_healthy
     environment:
       - DATABASE_URL=postgresql+psycopg://theboard:theboard_dev_pass@postgres:5432/theboard
       - REDIS_URL=redis://:theboard_redis_pass@redis:6379
       - RABBITMQ_URL=amqp://theboard:theboard_rabbit_pass@rabbitmq:5672
-      - QDRANT_URL=http://host.docker.internal:6333
-      - QDRANT_API_KEY=touchmyflappyfoldyholds
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY:-}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
     volumes:
@@ -91,12 +93,32 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # Qdrant - Vector database for embeddings
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: theboard-qdrant
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - theboard-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
 volumes:
   postgres_data:
     driver: local
   redis_data:
     driver: local
   rabbitmq_data:
+    driver: local
+  qdrant_data:
     driver: local
 
 networks:
