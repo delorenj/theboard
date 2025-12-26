@@ -290,8 +290,12 @@ class MultiAgentMeetingWorkflow:
                 agent.background.lower() if agent.background else "",
             ])
 
-            # Count keyword matches
-            matches = sum(1 for keyword in keywords if keyword in agent_text)
+            # Tokenize agent text using same approach as topic tokenization
+            # to ensure exact word matches and avoid false positives
+            agent_words = set(re.findall(r'\b\w+\b', agent_text))
+            
+            # Count keyword matches using word boundary matching
+            matches = sum(1 for keyword in keywords if keyword in agent_words)
 
             # Calculate relevance score
             relevance_score = matches / len(keywords) if keywords else 0
