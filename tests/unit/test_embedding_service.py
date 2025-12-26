@@ -11,7 +11,7 @@ Tests cover:
 - Error handling and edge cases
 """
 
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import numpy as np
