@@ -8,7 +8,7 @@ Tests cover:
 - Event integration patterns
 """
 
-from datetime import UTC, datetime
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
