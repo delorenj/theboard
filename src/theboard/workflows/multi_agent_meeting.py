@@ -407,12 +407,6 @@ class MultiAgentMeetingWorkflow:
             )
             round_comments = round_db.scalars(comment_stmt).all()
 
-            # Calculate round metrics
-            total_tokens = sum(r.tokens_used for r in round_responses)
-            total_cost = sum(r.cost for r in round_responses)
-            total_response_length = sum(len(r.response_text) for r in round_responses)
-            comment_count = len(round_comments)
-
             # Emit event for each agent in the round
             for response in round_responses:
                 agent_comments = [c for c in round_comments if c.agent_name == response.agent_name]

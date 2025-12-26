@@ -13,7 +13,6 @@ Design Philosophy:
 """
 
 import logging
-from abc import ABC, abstractmethod
 from typing import Protocol
 
 from theboard.config import get_settings
@@ -92,9 +91,10 @@ class InMemoryEventEmitter:
         return [e for e in self.events if e.event_type == event_type]
 
 
-class RabbitMQEventEmitter(ABC):
+class RabbitMQEventEmitter:
     """RabbitMQ event emitter (stub for Sprint 2.5).
 
+    This is an intentional stub implementation that cannot be used in production.
     Full implementation requires:
     - aiormq connection management
     - Exchange/queue declaration
@@ -104,6 +104,10 @@ class RabbitMQEventEmitter(ABC):
 
     Sprint 2.5 scope: Interface definition only.
     Sprint 3 scope: Full implementation with connection management.
+
+    Note: This stub class should not be instantiated. The factory pattern
+    automatically falls back to NullEventEmitter when RabbitMQ is selected
+    but not yet implemented.
     """
 
     def __init__(self, connection_url: str, exchange: str = "theboard.events") -> None:
@@ -112,25 +116,13 @@ class RabbitMQEventEmitter(ABC):
         Args:
             connection_url: AMQP connection URL
             exchange: Exchange name for event routing
-        """
-        self.connection_url = connection_url
-        self.exchange = exchange
-        logger.warning(
-            "RabbitMQEventEmitter: Stub implementation - events will not be transmitted"
-        )
-
-    @abstractmethod
-    def emit(self, event: BaseEvent) -> None:
-        """Emit event to RabbitMQ (stub).
-
-        Args:
-            event: Event to emit
 
         Raises:
-            NotImplementedError: Full implementation deferred to Sprint 3
+            NotImplementedError: This stub should not be instantiated
         """
         raise NotImplementedError(
-            "RabbitMQEventEmitter: Full implementation deferred to Sprint 3"
+            "RabbitMQEventEmitter: Stub implementation - use NullEventEmitter instead. "
+            "Full RabbitMQ implementation deferred to Sprint 3"
         )
 
 
