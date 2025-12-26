@@ -16,7 +16,6 @@ from theboard.agents.domain_expert import DomainExpertAgent
 from theboard.agents.notetaker import NotetakerAgent
 from theboard.database import get_sync_db
 from theboard.events import (
-    CommentExtractedEvent,
     MeetingCompletedEvent,
     MeetingConvergedEvent,
     MeetingFailedEvent,
