@@ -108,6 +108,7 @@ def run_meeting(meeting_id: UUID, interactive: bool, rerun: bool = False) -> Mee
 
     # SESSION LEAK FIX: Validate and update meeting status, then close session
     # before running workflow (workflow opens its own sessions as needed)
+    meeting = None
     with get_sync_db() as db:
         try:
             # Get meeting
@@ -148,7 +149,7 @@ def run_meeting(meeting_id: UUID, interactive: bool, rerun: bool = False) -> Mee
 
         except Exception as e:
             # Handle validation errors before workflow execution
-            if 'meeting' in locals() and meeting:
+            if meeting:
                 meeting.status = MeetingStatus.FAILED.value
                 db.commit()
             logger.exception("Failed to validate meeting for run")
