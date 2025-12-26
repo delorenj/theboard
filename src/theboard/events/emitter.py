@@ -125,19 +125,6 @@ class RabbitMQEventEmitter:
             "Full RabbitMQ implementation deferred to Sprint 3"
         )
 
-    def emit(self, event: BaseEvent) -> None:
-        """Emit event to RabbitMQ (stub).
-
-        Args:
-            event: Event to emit
-
-        Raises:
-            NotImplementedError: Full implementation deferred to Sprint 3
-        """
-        raise NotImplementedError(
-            "RabbitMQEventEmitter: Full implementation deferred to Sprint 3"
-        )
-
 
 # Global emitter instance (lazy initialization)
 _emitter: EventEmitter | None = None
