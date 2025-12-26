@@ -103,8 +103,11 @@ def run_meeting(meeting_id: UUID, interactive: bool, rerun: bool = False) -> Mee
     """
     import asyncio
 
+    from theboard.workflows.multi_agent_meeting import MultiAgentMeetingWorkflow
     from theboard.workflows.simple_meeting import SimpleMeetingWorkflow
 
+    # SESSION LEAK FIX: Validate and update meeting status, then close session
+    # before running workflow (workflow opens its own sessions as needed)
     with get_sync_db() as db:
         try:
             # Get meeting
@@ -136,27 +139,49 @@ def run_meeting(meeting_id: UUID, interactive: bool, rerun: bool = False) -> Mee
             if meeting.status not in [MeetingStatus.CREATED.value, MeetingStatus.PAUSED.value]:
                 raise ValueError(f"Meeting cannot be run in status: {meeting.status}")
 
-            # Update status
+            # Update status and extract model override before closing session
             meeting.status = MeetingStatus.RUNNING.value
+            model_override = meeting.model_override
             db.commit()
 
             logger.info("Running meeting %s", meeting_id)
 
-            # Execute workflow with model override
-            workflow = SimpleMeetingWorkflow(meeting_id, model_override=meeting.model_override)
-            asyncio.run(workflow.execute())
-
-            # Get updated meeting
-            db.refresh(meeting)
-
-            return MeetingResponse.model_validate(meeting)
-
         except Exception as e:
-            if meeting:
+            # Handle validation errors before workflow execution
+            if 'meeting' in locals() and meeting:
                 meeting.status = MeetingStatus.FAILED.value
                 db.commit()
-            logger.exception("Failed to run meeting")
+            logger.exception("Failed to validate meeting for run")
             raise ValueError(f"Failed to run meeting: {e!s}") from e
+
+    # SESSION LEAK FIX: Execute workflow WITHOUT holding database session
+    # Workflow will open its own sessions as needed for each operation
+    try:
+        # Sprint 2: Use multi-agent workflow for all meetings
+        # SimpleMeetingWorkflow kept available for single-agent testing if needed
+        workflow = MultiAgentMeetingWorkflow(meeting_id, model_override=model_override)
+        asyncio.run(workflow.execute())
+
+    except Exception as e:
+        # Handle workflow execution errors
+        with get_sync_db() as error_db:
+            stmt = select(Meeting).where(Meeting.id == meeting_id)
+            failed_meeting = error_db.scalars(stmt).first()
+            if failed_meeting:
+                failed_meeting.status = MeetingStatus.FAILED.value
+                error_db.commit()
+        logger.exception("Workflow execution failed")
+        raise ValueError(f"Failed to run meeting: {e!s}") from e
+
+    # SESSION LEAK FIX: Reopen session ONLY to get final meeting state
+    with get_sync_db() as result_db:
+        stmt = select(Meeting).where(Meeting.id == meeting_id)
+        final_meeting = result_db.scalars(stmt).first()
+
+        if not final_meeting:
+            raise ValueError(f"Meeting not found after execution: {meeting_id}")
+
+        return MeetingResponse.model_validate(final_meeting)
 
 
 def fork_meeting(meeting_id: UUID) -> MeetingResponse:
