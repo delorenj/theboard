@@ -8,6 +8,7 @@ This workflow orchestrates multi-agent, multi-round brainstorming meetings with:
 """
 
 import logging
+import re
 from uuid import UUID
 
 from sqlalchemy import select
@@ -262,7 +263,6 @@ class MultiAgentMeetingWorkflow:
         # Tokenize and clean topic
         topic_lower = topic.lower()
         # Remove punctuation and split
-        import re
         words = re.findall(r'\b\w+\b', topic_lower)
         keywords = [w for w in words if w not in stopwords and len(w) > 2]
 
