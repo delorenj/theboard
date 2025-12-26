@@ -29,6 +29,8 @@ dependencies = [
     "pydantic-settings>=2.5.0",
     # Embeddings
     "sentence-transformers>=3.0.0",
+    # Graph algorithms
+    "networkx>=3.0.0",
     # Configuration
     "tomli>=2.0.1",
     "tomli-w>=1.0.0",

@@ -17,6 +17,7 @@ from collections import defaultdict
 from typing import Protocol
 from uuid import UUID
 
+import networkx as nx
 from agno.agent import Agent as AgnoAgent
 
 from theboard.agents.base import create_agno_agent, extract_agno_metrics
@@ -209,11 +210,11 @@ class CompressorAgent:
         Uses embedding service to compute similarity matrix, then creates
         clusters of comments with similarity >= threshold.
 
-        Clustering Algorithm:
+        Graph-Based Clustering Algorithm:
         1. Compute pairwise similarity matrix
-        2. For each comment, find similar comments (similarity >= threshold)
-        3. Form clusters by grouping similar comments
-        4. Handle overlapping clusters (merge if sharing comments)
+        2. Model as graph: nodes = comment IDs, edges = similarity >= threshold
+        3. Find connected components (clusters) using networkx
+        4. More efficient O(N+E) vs O(N^2) and handles transitive overlaps correctly
 
         Args:
             comments: List of Comment objects to cluster
@@ -230,32 +231,17 @@ class CompressorAgent:
             threshold=self.similarity_threshold,
         )
 
-        # Build clusters from similarity matrix
-        clusters: list[set[int]] = []
-        processed: set[int] = set()
+        # Build graph: nodes = comment IDs, edges = similarity >= threshold
+        graph = nx.Graph()
+        graph.add_nodes_from(comment_ids)
 
-        for comment_id in comment_ids:
-            if comment_id in processed:
-                continue
+        # Add edges for similar comments
+        for comment_id, similar_ids in similarity_matrix.items():
+            for similar_id in similar_ids:
+                graph.add_edge(comment_id, similar_id)
 
-            # Get similar comments for this comment
-            similar_ids = similarity_matrix.get(comment_id, [])
-
-            # Create cluster with this comment and its similar comments
-            cluster = {comment_id} | set(similar_ids)
-
-            # Check if this cluster overlaps with existing clusters
-            merged = False
-            for existing_cluster in clusters:
-                if cluster & existing_cluster:  # If clusters share any comments
-                    existing_cluster.update(cluster)
-                    merged = True
-                    break
-
-            if not merged:
-                clusters.append(cluster)
-
-            processed.add(comment_id)
+        # Find connected components (clusters)
+        clusters = list(nx.connected_components(graph))
 
         # Convert cluster IDs to Comment objects
         comment_map = {c.id: c for c in comments}
@@ -264,15 +250,12 @@ class CompressorAgent:
             for cluster_ids in clusters
         ]
 
-        # Filter out empty clusters and single-comment clusters
-        comment_clusters = [c for c in comment_clusters if len(c) > 1]
+        # Separate multi-comment clusters from singletons
+        multi_clusters = [c for c in comment_clusters if len(c) > 1]
+        singletons = [c for c in comment_clusters if len(c) == 1]
 
-        # Add singleton comments as individual clusters
-        clustered_ids = {cid for cluster in clusters for cid in cluster}
-        singletons = [c for c in comments if c.id not in clustered_ids]
-        comment_clusters.extend([[c] for c in singletons])
-
-        return comment_clusters
+        # Return multi-clusters first, then singletons
+        return multi_clusters + singletons
 
     def _tier2_semantic_merge(
         self,

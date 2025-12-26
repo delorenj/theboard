@@ -375,47 +375,46 @@ class TestSimilarityMatrix:
     """Test similarity matrix computation for clustering."""
 
     def test_compute_similarity_matrix(self):
-        """Test computing pairwise similarity matrix."""
+        """Test computing pairwise similarity matrix with batch operations."""
         # Mock client
         mock_client = MagicMock()
 
-        # Mock retrieve calls (get embeddings for each comment)
-        def mock_retrieve(collection_name, ids, with_vectors):
-            comment_id = ids[0]
-            if comment_id == 1:
-                vector = [0.1, 0.2, 0.3]
-            elif comment_id == 2:
-                vector = [0.4, 0.5, 0.6]
-            else:
-                vector = [0.7, 0.8, 0.9]
+        # Mock batch retrieve call (returns all embeddings at once)
+        mock_point1 = MagicMock()
+        mock_point1.id = 1
+        mock_point1.vector = [0.1, 0.2, 0.3]
 
-            mock_point = MagicMock()
-            mock_point.vector = vector
-            return [mock_point]
+        mock_point2 = MagicMock()
+        mock_point2.id = 2
+        mock_point2.vector = [0.4, 0.5, 0.6]
 
-        mock_client.retrieve.side_effect = mock_retrieve
+        mock_point3 = MagicMock()
+        mock_point3.id = 3
+        mock_point3.vector = [0.7, 0.8, 0.9]
 
-        # Mock search calls (find similar comments)
-        def mock_search(collection_name, query_vector, limit, score_threshold):
-            # Return different similar comments based on query
-            if query_vector == [0.1, 0.2, 0.3]:  # Comment 1
-                return [
-                    ScoredPoint(id=1, score=1.0, version=1, vector=None, payload={}),
-                    ScoredPoint(id=2, score=0.88, version=1, vector=None, payload={}),
-                ]
-            elif query_vector == [0.4, 0.5, 0.6]:  # Comment 2
-                return [
-                    ScoredPoint(id=2, score=1.0, version=1, vector=None, payload={}),
-                    ScoredPoint(id=1, score=0.88, version=1, vector=None, payload={}),
-                    ScoredPoint(id=3, score=0.86, version=1, vector=None, payload={}),
-                ]
-            else:  # Comment 3
-                return [
-                    ScoredPoint(id=3, score=1.0, version=1, vector=None, payload={}),
-                    ScoredPoint(id=2, score=0.86, version=1, vector=None, payload={}),
-                ]
+        mock_client.retrieve.return_value = [mock_point1, mock_point2, mock_point3]
 
-        mock_client.search.side_effect = mock_search
+        # Mock batch search results
+        batch_results = [
+            # Results for comment 1
+            [
+                ScoredPoint(id=1, score=1.0, version=1, vector=None, payload={}),
+                ScoredPoint(id=2, score=0.88, version=1, vector=None, payload={}),
+            ],
+            # Results for comment 2
+            [
+                ScoredPoint(id=2, score=1.0, version=1, vector=None, payload={}),
+                ScoredPoint(id=1, score=0.88, version=1, vector=None, payload={}),
+                ScoredPoint(id=3, score=0.86, version=1, vector=None, payload={}),
+            ],
+            # Results for comment 3
+            [
+                ScoredPoint(id=3, score=1.0, version=1, vector=None, payload={}),
+                ScoredPoint(id=2, score=0.86, version=1, vector=None, payload={}),
+            ],
+        ]
+
+        mock_client.search_batch.return_value = batch_results
 
         # Initialize service
         service = EmbeddingService(
@@ -428,6 +427,14 @@ class TestSimilarityMatrix:
             comment_ids=[1, 2, 3],
             threshold=0.85,
         )
+
+        # Verify batch operations were used
+        mock_client.retrieve.assert_called_once_with(
+            collection_name="comments",
+            ids=[1, 2, 3],
+            with_vectors=True,
+        )
+        mock_client.search_batch.assert_called_once()
 
         # Verify similarity matrix structure
         assert 1 in similarity_matrix
@@ -449,18 +456,29 @@ class TestSimilarityMatrix:
 
     def test_compute_similarity_matrix_handles_missing_comment(self):
         """Test similarity matrix handles comments not found in Qdrant."""
-        # Mock client that returns empty for comment 2
+        # Mock client that returns only comments 1 and 3 (comment 2 missing)
         mock_client = MagicMock()
 
-        def mock_retrieve(collection_name, ids, with_vectors):
-            if ids[0] == 2:
-                return []  # Comment not found
-            mock_point = MagicMock()
-            mock_point.vector = [0.1, 0.2, 0.3]
-            return [mock_point]
+        # Mock batch retrieve - returns only found points
+        mock_point1 = MagicMock()
+        mock_point1.id = 1
+        mock_point1.vector = [0.1, 0.2, 0.3]
 
-        mock_client.retrieve.side_effect = mock_retrieve
-        mock_client.search.return_value = []
+        mock_point3 = MagicMock()
+        mock_point3.id = 3
+        mock_point3.vector = [0.7, 0.8, 0.9]
+
+        mock_client.retrieve.return_value = [mock_point1, mock_point3]  # Comment 2 missing
+
+        # Mock batch search results (only for found comments)
+        batch_results = [
+            # Results for comment 1
+            [ScoredPoint(id=1, score=1.0, version=1, vector=None, payload={})],
+            # Results for comment 3
+            [ScoredPoint(id=3, score=1.0, version=1, vector=None, payload={})],
+        ]
+
+        mock_client.search_batch.return_value = batch_results
 
         # Initialize service
         service = EmbeddingService(
@@ -474,7 +492,12 @@ class TestSimilarityMatrix:
             threshold=0.85,
         )
 
-        # Verify Comment 2 has empty similarity list
+        # Verify all comments are in matrix
+        assert 1 in similarity_matrix
+        assert 2 in similarity_matrix
+        assert 3 in similarity_matrix
+
+        # Verify Comment 2 has empty similarity list (not found in Qdrant)
         assert similarity_matrix[2] == []
 
 

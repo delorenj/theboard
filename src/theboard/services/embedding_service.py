@@ -18,7 +18,7 @@ from typing import Protocol
 
 import numpy as np
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, PointStruct, VectorParams
+from qdrant_client.models import Distance, PointStruct, SearchRequest, VectorParams
 from sentence_transformers import SentenceTransformer
 
 from theboard.config import get_settings
@@ -257,6 +257,10 @@ class EmbeddingService:
         For each comment, find all similar comments above threshold.
         Used for clustering in compression agent.
 
+        Optimized with batch operations:
+        - Single retrieve() call for all vectors
+        - Single search_batch() call for all searches
+
         Args:
             comment_ids: List of comment IDs to compare
             threshold: Similarity threshold (0.85 = 85% similar)
@@ -264,34 +268,44 @@ class EmbeddingService:
         Returns:
             Dict mapping comment_id → [similar_comment_ids]
         """
-        similarity_matrix: dict[int, list[int]] = {cid: [] for cid in comment_ids}
+        if not comment_ids:
+            return {}
 
-        # For each comment, search for similar comments
-        for comment_id in comment_ids:
-            # Get embedding for this comment from Qdrant
-            points = self.qdrant_client.retrieve(
-                collection_name=self.collection_name,
-                ids=[comment_id],
-                with_vectors=True,
-            )
+        # Retrieve all vectors in one batch call
+        points = self.qdrant_client.retrieve(
+            collection_name=self.collection_name,
+            ids=comment_ids,
+            with_vectors=True,
+        )
 
-            if not points:
-                continue
+        # Map comment IDs to their vectors
+        vectors_map = {p.id: p.vector for p in points if p.vector}
+        valid_comment_ids = [cid for cid in comment_ids if cid in vectors_map]
 
-            # Get the embedding vector
-            embedding = points[0].vector
+        if not valid_comment_ids:
+            return {cid: [] for cid in comment_ids}
 
-            # Find similar comments
-            similar = self.find_similar_comments(
-                query_embedding=embedding,  # type: ignore
-                limit=len(comment_ids),  # Search all comments
+        # Prepare batch search requests
+        search_requests = [
+            SearchRequest(
+                vector=vectors_map[cid],
+                limit=len(comment_ids),
                 score_threshold=threshold,
             )
+            for cid in valid_comment_ids
+        ]
 
-            # Filter out self-matches and store similar comment IDs
-            similarity_matrix[comment_id] = [
-                similar_id for similar_id, _ in similar if similar_id != comment_id
-            ]
+        # Perform batch search
+        batch_results = self.qdrant_client.search_batch(
+            collection_name=self.collection_name,
+            requests=search_requests,
+        )
+
+        # Build similarity matrix from batch results
+        similarity_matrix: dict[int, list[int]] = {cid: [] for cid in comment_ids}
+        for i, original_id in enumerate(valid_comment_ids):
+            similar_ids = [hit.id for hit in batch_results[i] if hit.id != original_id]
+            similarity_matrix[original_id] = similar_ids
 
         logger.info(
             "Computed similarity matrix for %d comments (threshold=%.2f)",
