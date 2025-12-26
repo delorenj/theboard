@@ -139,6 +139,9 @@ class SimpleMeetingWorkflow:
         automatic conversation persistence. Agno stores the conversation in
         PostgresDb, allowing the agent to maintain context across rounds.
 
+        CRITICAL FIX: Database session is closed BEFORE async LLM calls to prevent
+        connection pool exhaustion. Session is reopened to store results.
+
         Args:
             db: Database session
             meeting: Meeting instance
@@ -155,11 +158,16 @@ class SimpleMeetingWorkflow:
             agent.name,
         )
 
+        # Extract data needed for LLM calls (meeting_id, agent details, topic)
+        meeting_id = meeting.id
+        agent_id = agent.id
+        agent_name = agent.name
+        topic = meeting.topic
+
         # Build context (for round 1, just the topic)
-        context = f"Topic: {meeting.topic}"
+        context = f"Topic: {topic}"
 
         # Agno Pattern: Create domain expert with session_id for persistence
-        # The agent will automatically save conversation to PostgresDb
         # Use preferences for model selection with full precedence hierarchy
         prefs = get_preferences_manager()
         model_to_use = prefs.get_model_for_agent(
@@ -174,75 +182,80 @@ class SimpleMeetingWorkflow:
             persona=agent.persona,
             background=agent.background,
             model=model_to_use,
-            session_id=str(meeting.id),  # Agno uses this for conversation persistence
+            session_id=str(meeting_id),  # Agno uses this for conversation persistence
         )
 
-        # Generate response using Agno agent
+        # SESSION LEAK FIX: Execute LLM calls WITHOUT holding database session
+        # This prevents connection pool exhaustion during long-running API calls
+        logger.debug("Executing LLM calls (session closed during API operations)")
+
         response_text = await expert.execute(context, round_num=round_num)
         metadata = expert.get_last_metadata()
 
-        # Store response in database
-        response = Response(
-            meeting_id=meeting.id,
-            agent_id=agent.id,
-            round=round_num,
-            agent_name=agent.name,
-            response_text=response_text,
-            model_used=metadata["model"],
-            tokens_used=metadata["tokens_used"],
-            cost=metadata["cost"],
-            context_size=len(context),
-        )
-
-        db.add(response)
-        db.commit()
-        db.refresh(response)
-
-        logger.info(
-            "Stored response from %s: %d tokens, $%.4f",
-            agent.name,
-            metadata["tokens_used"],
-            metadata["cost"],
-        )
-
-        # Agno Pattern: Extract comments using Agno agent with structured output
-        # The notetaker agent uses output_schema for automatic JSON validation
-        comments = await self.notetaker.extract_comments(response_text, agent.name)
+        # Extract comments (also async LLM call, no session held)
+        comments = await self.notetaker.extract_comments(response_text, agent_name)
         notetaker_metadata = self.notetaker.get_last_metadata()
 
-        # Store comments in database
-        for comment in comments:
-            db_comment = DBComment(
-                meeting_id=meeting.id,
-                response_id=response.id,
+        # SESSION LEAK FIX: Reopen session ONLY for storing results
+        # This ensures minimal connection hold time
+        with get_sync_db() as storage_db:
+            # Store response in database
+            response = Response(
+                meeting_id=meeting_id,
+                agent_id=agent_id,
                 round=round_num,
-                agent_name=agent.name,
-                text=comment.text,
-                category=comment.category.value,
-                novelty_score=comment.novelty_score,
-                support_count=1,
-                is_merged=False,
+                agent_name=agent_name,
+                response_text=response_text,
+                model_used=metadata["model"],
+                tokens_used=metadata["tokens_used"],
+                cost=metadata["cost"],
+                context_size=len(context),
             )
-            db.add(db_comment)
 
-        db.commit()
+            storage_db.add(response)
+            storage_db.commit()
+            storage_db.refresh(response)
 
-        logger.info(
-            "Extracted and stored %d comments from %s (notetaker: %d tokens, $%.4f)",
-            len(comments),
-            agent.name,
-            notetaker_metadata["tokens_used"],
-            notetaker_metadata["cost"],
-        )
+            logger.info(
+                "Stored response from %s: %d tokens, $%.4f",
+                agent_name,
+                metadata["tokens_used"],
+                metadata["cost"],
+            )
 
-        # Update meeting metrics
-        meeting.total_comments += len(comments)
-        meeting.total_cost += metadata["cost"] + notetaker_metadata["cost"]
-        meeting.context_size = len(context) + len(response_text)
+            # Store comments in database
+            for comment in comments:
+                db_comment = DBComment(
+                    meeting_id=meeting_id,
+                    response_id=response.id,
+                    round=round_num,
+                    agent_name=agent_name,
+                    text=comment.text,
+                    category=comment.category.value,
+                    novelty_score=comment.novelty_score,
+                    support_count=1,
+                    is_merged=False,
+                )
+                storage_db.add(db_comment)
 
-        # Note: Redis state management for meeting coordination could be added here
-        # if needed, but agent conversation state is now in Agno's PostgresDb
+            storage_db.commit()
 
-        db.commit()
+            logger.info(
+                "Extracted and stored %d comments from %s (notetaker: %d tokens, $%.4f)",
+                len(comments),
+                agent_name,
+                notetaker_metadata["tokens_used"],
+                notetaker_metadata["cost"],
+            )
+
+            # Update meeting metrics (need to refresh meeting object in new session)
+            stmt = select(Meeting).where(Meeting.id == meeting_id)
+            meeting_obj = storage_db.scalars(stmt).first()
+
+            if meeting_obj:
+                meeting_obj.total_comments += len(comments)
+                meeting_obj.total_cost += metadata["cost"] + notetaker_metadata["cost"]
+                meeting_obj.context_size = len(context) + len(response_text)
+                storage_db.commit()
 
         logger.info("Round %d completed successfully", round_num)
