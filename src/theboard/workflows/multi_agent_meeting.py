@@ -28,6 +28,10 @@ from theboard.models.meeting import Agent, Comment as DBComment, Meeting, Respon
 from theboard.preferences import get_preferences_manager
 from theboard.schemas import MeetingStatus
 
+# Sprint 3: Import embedding service and compressor agent
+from theboard.agents.compressor import CompressorAgent
+from theboard.services.embedding_service import get_embedding_service
+
 logger = logging.getLogger(__name__)
 
 
@@ -47,6 +51,7 @@ class MultiAgentMeetingWorkflow:
         meeting_id: UUID,
         model_override: str | None = None,
         novelty_threshold: float = 0.3,
+        enable_compression: bool = True,
     ) -> None:
         """Initialize multi-agent workflow.
 
@@ -54,10 +59,12 @@ class MultiAgentMeetingWorkflow:
             meeting_id: Meeting UUID
             model_override: Optional CLI model override (--model flag)
             novelty_threshold: Convergence threshold for novelty scores (default 0.3)
+            enable_compression: Enable comment compression (default True, Sprint 3)
         """
         self.meeting_id = meeting_id
         self.model_override = model_override
         self.novelty_threshold = novelty_threshold
+        self.enable_compression = enable_compression
 
         # Initialize event emitter (Sprint 2.5)
         self.emitter = get_event_emitter()
@@ -70,6 +77,17 @@ class MultiAgentMeetingWorkflow:
             cli_override=model_override,
         )
         self.notetaker = NotetakerAgent(model=notetaker_model)
+
+        # Initialize compressor agent (Sprint 3 Story 9)
+        if self.enable_compression:
+            compressor_model = prefs.get_model_for_agent(
+                agent_name="compressor",
+                agent_type="compressor",
+                cli_override=model_override,
+            )
+            self.compressor = CompressorAgent(model=compressor_model)
+        else:
+            self.compressor = None
 
     async def execute(self) -> None:
         """Execute the multi-agent meeting workflow.
@@ -143,6 +161,40 @@ class MultiAgentMeetingWorkflow:
 
                 # Execute round with all agents sequentially
                 avg_novelty = await self._execute_round(agents, round_num)
+
+                # Sprint 3 Story 9: Compress comments after each round
+                if self.enable_compression and self.compressor:
+                    try:
+                        compression_metrics = self.compressor.compress_comments(
+                            meeting_id=self.meeting_id,
+                            round_num=round_num,
+                        )
+                        logger.info(
+                            "Round %d compression: %d → %d comments (%.1f%% reduction)",
+                            round_num,
+                            compression_metrics.original_count,
+                            compression_metrics.compressed_count,
+                            compression_metrics.reduction_percentage,
+                        )
+
+                        # Update meeting compression metrics
+                        with get_sync_db() as compression_db:
+                            compression_stmt = select(Meeting).where(Meeting.id == self.meeting_id)
+                            compression_meeting = compression_db.scalars(compression_stmt).first()
+                            if compression_meeting:
+                                # Track compression cost
+                                compressor_metadata = self.compressor.get_last_metadata()
+                                compression_meeting.total_cost += compressor_metadata["cost"]
+                                compression_db.commit()
+
+                    except Exception as e:
+                        # Non-fatal: compression failure doesn't block workflow
+                        logger.warning(
+                            "Compression failed for round %d: %s",
+                            round_num,
+                            str(e),
+                            exc_info=True,
+                        )
 
                 # Check convergence
                 if avg_novelty < self.novelty_threshold:
@@ -563,6 +615,8 @@ class MultiAgentMeetingWorkflow:
 
             # Store comments
             novelty_scores = []
+            db_comments = []  # Sprint 3: Track for embedding generation
+
             for comment in comments:
                 db_comment = DBComment(
                     meeting_id=self.meeting_id,
@@ -576,6 +630,7 @@ class MultiAgentMeetingWorkflow:
                     is_merged=False,
                 )
                 storage_db.add(db_comment)
+                db_comments.append(db_comment)  # Sprint 3: Collect for embeddings
                 novelty_scores.append(comment.novelty_score)
 
             storage_db.commit()
@@ -587,6 +642,40 @@ class MultiAgentMeetingWorkflow:
                 notetaker_metadata["tokens_used"],
                 notetaker_metadata["cost"],
             )
+
+            # Sprint 3: Generate and store embeddings for comments
+            if db_comments:
+                try:
+                    embedding_service = get_embedding_service()
+
+                    # Extract data for embedding service
+                    comment_ids = [c.id for c in db_comments]
+                    texts = [c.text for c in db_comments]
+                    agent_names = [c.agent_name for c in db_comments]
+
+                    # Store embeddings in Qdrant
+                    embedding_service.store_comment_embeddings(
+                        comment_ids=comment_ids,
+                        texts=texts,
+                        meeting_id=str(self.meeting_id),
+                        round_num=round_num,
+                        agent_names=agent_names,
+                    )
+
+                    logger.info(
+                        "Stored embeddings for %d comments from %s in round %d",
+                        len(db_comments),
+                        agent_name,
+                        round_num,
+                    )
+
+                except Exception as e:
+                    # Non-fatal: embedding generation failure doesn't block workflow
+                    logger.warning(
+                        "Failed to generate embeddings for comments: %s",
+                        str(e),
+                        exc_info=True,
+                    )
 
             # Update meeting metrics
             stmt = select(Meeting).where(Meeting.id == self.meeting_id)
