@@ -19,7 +19,7 @@ services:
       - REDIS_URL=redis://:theboard_redis_pass@redis:6379
       - RABBITMQ_URL=amqp://theboard:theboard_rabbit_pass@rabbitmq:5672
       - QDRANT_URL=http://qdrant:6333
-      - QDRANT_API_KEY=
+      - QDRANT_API_KEY=${QDRANT_API_KEY:-}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
     volumes:
