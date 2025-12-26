@@ -30,7 +30,11 @@ class EmbeddingModel(Protocol):
     """Protocol for embedding model interface."""
 
     def encode(
-        self, sentences: list[str], batch_size: int = 32, show_progress_bar: bool = False
+        self,
+        sentences: list[str],
+        batch_size: int = 32,
+        show_progress_bar: bool = False,
+        convert_to_numpy: bool = True,
     ) -> np.ndarray:
         """Encode sentences into embeddings.
 
@@ -38,6 +42,7 @@ class EmbeddingModel(Protocol):
             sentences: List of text strings to embed
             batch_size: Batch size for encoding
             show_progress_bar: Whether to show progress
+            convert_to_numpy: Whether to convert output to numpy array
 
         Returns:
             Numpy array of embeddings (shape: [n_sentences, embedding_dim])
