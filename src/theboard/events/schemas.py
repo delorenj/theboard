@@ -126,3 +126,48 @@ class MeetingFailedEvent(BaseEvent):
     error_message: str
     round_num: int | None = None
     agent_name: str | None = None
+
+
+# Sprint 4 Story 12: Additional events for human-in-loop
+
+
+class AgentResponseReadyEvent(BaseEvent):
+    """Emitted when agent completes a response and is ready for comments.
+
+    Payload contains response metadata for tracking and human intervention.
+    """
+
+    event_type: Literal["agent.response.ready"] = "agent.response.ready"
+    round_num: int
+    agent_name: str
+    response_length: int
+    tokens_used: int
+    cost: float
+
+
+class ContextCompressionTriggeredEvent(BaseEvent):
+    """Emitted when context compression is triggered.
+
+    Payload contains compression trigger context and metrics.
+    """
+
+    event_type: Literal["context.compression.triggered"] = "context.compression.triggered"
+    round_num: int
+    context_size_before: int
+    compression_threshold: int
+    trigger_reason: str
+
+
+class MeetingHumanInputNeededEvent(BaseEvent):
+    """Emitted when meeting requires human intervention.
+
+    Payload contains context for decision and available options.
+    Used for human-in-loop interactive prompts.
+    """
+
+    event_type: Literal["meeting.human.input.needed"] = "meeting.human.input.needed"
+    round_num: int
+    reason: str  # Why human input is needed
+    prompt_text: str  # Question to display to user
+    options: list[str]  # Available choices: ["continue", "pause", "modify_context", "stop"]
+    timeout_seconds: int = 300  # Default: 5 minutes

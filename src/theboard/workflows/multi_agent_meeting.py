@@ -8,6 +8,7 @@ This workflow orchestrates multi-agent, multi-round brainstorming meetings with:
 """
 
 import logging
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import select
@@ -69,6 +70,9 @@ class MultiAgentMeetingWorkflow:
         # Initialize event emitter (Sprint 2.5)
         self.emitter = get_event_emitter()
 
+        # Hybrid model strategy tracking (Sprint 4 Story 13)
+        self.promoted_agents: set[str] = set()  # Agents promoted to premium models
+
         # Initialize notetaker (stateless, doesn't need session persistence)
         prefs = get_preferences_manager()
         notetaker_model = prefs.get_model_for_agent(
@@ -88,6 +92,208 @@ class MultiAgentMeetingWorkflow:
             self.compressor = CompressorAgent(model=compressor_model)
         else:
             self.compressor = None
+
+    def pause_meeting(self, reason: str = "User requested pause") -> bool:
+        """Pause meeting execution and save state to Redis.
+
+        Sprint 4 Story 12: Meeting pause capability for human-in-loop.
+
+        Args:
+            reason: Reason for pausing (for logging/audit)
+
+        Returns:
+            True if paused successfully, False if Redis unavailable
+        """
+        from theboard.utils.redis_manager import RedisManager
+
+        redis = RedisManager()
+
+        with get_sync_db() as db:
+            meeting = db.query(Meeting).filter(Meeting.id == self.meeting_id).first()
+            if not meeting:
+                logger.error("Meeting %s not found for pause", self.meeting_id)
+                return False
+
+            # Update meeting status to paused
+            meeting.status = "paused"
+            db.commit()
+
+            # Save state to Redis
+            state = {
+                "status": "paused",
+                "reason": reason,
+                "current_round": meeting.current_round,
+                "context_size": meeting.context_size,
+                "total_comments": meeting.total_comments,
+                "paused_at": datetime.now(UTC).isoformat(),
+            }
+
+            if redis.set_meeting_state(str(self.meeting_id), state):
+                logger.info(
+                    "Meeting %s paused: %s (round %d)",
+                    self.meeting_id,
+                    reason,
+                    meeting.current_round,
+                )
+                return True
+
+            logger.warning("Failed to save pause state to Redis for meeting %s", self.meeting_id)
+            return False
+
+    def resume_meeting(self) -> bool:
+        """Resume paused meeting from Redis state.
+
+        Sprint 4 Story 12: Meeting resume capability for human-in-loop.
+
+        Returns:
+            True if resumed successfully, False if not paused or Redis unavailable
+        """
+        from theboard.utils.redis_manager import RedisManager
+
+        redis = RedisManager()
+
+        # Load state from Redis
+        state = redis.get_meeting_state(str(self.meeting_id))
+        if not state:
+            logger.warning("No pause state found in Redis for meeting %s", self.meeting_id)
+            return False
+
+        with get_sync_db() as db:
+            meeting = db.query(Meeting).filter(Meeting.id == self.meeting_id).first()
+            if not meeting:
+                logger.error("Meeting %s not found for resume", self.meeting_id)
+                return False
+
+            # Update meeting status to running
+            meeting.status = "running"
+            db.commit()
+
+            logger.info(
+                "Meeting %s resumed from round %d (paused: %s)",
+                self.meeting_id,
+                state.get("current_round", 0),
+                state.get("reason", "unknown"),
+            )
+            return True
+
+    def check_pause_requested(self) -> bool:
+        """Check if meeting pause has been requested via Redis.
+
+        Used during execution to check for external pause requests
+        (e.g., from CLI human-in-loop prompts).
+
+        Returns:
+            True if pause requested, False otherwise
+        """
+        from theboard.utils.redis_manager import RedisManager
+
+        redis = RedisManager()
+        state = redis.get_meeting_state(str(self.meeting_id))
+
+        if state and state.get("status") == "pause_requested":
+            logger.info("Pause requested for meeting %s", self.meeting_id)
+            return True
+
+        return False
+
+    def _promote_top_performers(self, round_num: int) -> None:
+        """Promote top-performing agents to premium models.
+
+        Sprint 4 Story 13: Hybrid Model Strategy
+
+        After round 1, calculate engagement metrics and promote top 20%
+        of agents from budget models (DeepSeek) to premium models (Opus).
+
+        Args:
+            round_num: Round number just completed
+        """
+        from theboard.services.engagement_metrics import EngagementMetricsCalculator
+
+        calculator = EngagementMetricsCalculator(self.meeting_id)
+
+        # Get top 20% performers
+        top_performers = calculator.get_top_performers(round_num, top_percent=0.2)
+
+        if not top_performers:
+            logger.warning("No top performers found for promotion (round %d)", round_num)
+            return
+
+        # Track promoted agents
+        for perf in top_performers:
+            self.promoted_agents.add(perf.agent_name)
+
+        logger.info(
+            "Promoted %d agents to premium models: %s",
+            len(top_performers),
+            [p.agent_name for p in top_performers],
+        )
+
+        # Log engagement scores
+        for perf in top_performers:
+            logger.info(
+                "  %s: engagement=%.3f (refs=%d, novelty=%.2f, comments=%d)",
+                perf.agent_name,
+                perf.engagement_score,
+                perf.peer_references,
+                perf.avg_novelty,
+                perf.comment_count,
+            )
+
+    def _get_agent_model(self, agent_name: str, agent_type: str = "domain_expert") -> str:
+        """Get model for an agent considering hybrid model strategy.
+
+        Sprint 4 Story 13: Hybrid Model Strategy
+
+        Logic:
+        1. If hybrid_models disabled: Use preferences (normal behavior)
+        2. If hybrid_models enabled:
+           - Round 1: Use budget model (DeepSeek)
+           - Round 2+: Use premium model (Opus) for promoted agents, budget for others
+
+        Args:
+            agent_name: Agent name
+            agent_type: Agent type (default: domain_expert)
+
+        Returns:
+            Model identifier
+        """
+        from theboard.models.pricing import get_promotion_model
+
+        prefs = get_preferences_manager()
+
+        with get_sync_db() as db:
+            meeting = db.query(Meeting).filter(Meeting.id == self.meeting_id).first()
+
+            if not meeting or not meeting.hybrid_models:
+                # Hybrid models disabled: use normal preferences
+                return prefs.get_model_for_agent(
+                    agent_name=agent_name,
+                    agent_type=agent_type,
+                    cli_override=self.model_override,
+                )
+
+            # Hybrid models enabled
+            current_round = meeting.current_round
+
+            if current_round == 1:
+                # Round 1: Everyone uses budget model (DeepSeek)
+                return "deepseek/deepseek-chat"
+
+            # Round 2+: Promoted agents use premium, others use budget
+            if agent_name in self.promoted_agents:
+                # Get budget model first, then promote it
+                budget_model = "deepseek/deepseek-chat"
+                promoted_model = get_promotion_model(budget_model)
+                logger.debug(
+                    "Agent %s promoted: %s → %s",
+                    agent_name,
+                    budget_model,
+                    promoted_model,
+                )
+                return promoted_model
+            else:
+                # Non-promoted agents stay on budget
+                return "deepseek/deepseek-chat"
 
     async def execute(self) -> None:
         """Execute the multi-agent meeting workflow.
@@ -159,8 +365,12 @@ class MultiAgentMeetingWorkflow:
             for round_num in range(1, meeting.max_rounds + 1):
                 logger.info("Starting round %d of %d", round_num, meeting.max_rounds)
 
-                # Execute round with all agents sequentially
-                avg_novelty = await self._execute_round(agents, round_num)
+                # Sprint 4 Story 11: Execute round based on strategy
+                if meeting.strategy == "greedy":
+                    avg_novelty = await self._execute_round_greedy(agents, round_num)
+                else:
+                    # Default: sequential strategy
+                    avg_novelty = await self._execute_round(agents, round_num)
 
                 # Sprint 3 Story 9: Compress comments after each round
                 if self.enable_compression and self.compressor:
@@ -195,6 +405,11 @@ class MultiAgentMeetingWorkflow:
                             str(e),
                             exc_info=True,
                         )
+
+                # Sprint 4 Story 13: Promote top performers after round 1
+                if round_num == 1 and meeting.hybrid_models:
+                    logger.info("Calculating engagement metrics for round 1...")
+                    self._promote_top_performers(round_num)
 
                 # Check convergence
                 if avg_novelty < self.novelty_threshold:
@@ -486,6 +701,297 @@ class MultiAgentMeetingWorkflow:
 
         return avg_novelty
 
+    async def _execute_round_greedy(self, agents: list[Agent], round_num: int) -> float:
+        """Execute a single round with greedy strategy (Sprint 4 Story 11).
+
+        Greedy Strategy:
+        1. All agents respond in parallel (asyncio.gather)
+        2. Comment-response phase: Agents respond to each other's comments
+        3. Higher token cost (N² responses) but faster convergence
+
+        Args:
+            agents: List of Agent instances for this round
+            round_num: Current round number
+
+        Returns:
+            Average novelty score for this round
+
+        Raises:
+            RuntimeError: If round execution fails
+        """
+        import asyncio
+
+        logger.info(
+            "Executing round %d with greedy strategy (%d agents in parallel)",
+            round_num,
+            len(agents),
+        )
+
+        # Build cumulative context from previous rounds
+        context = await self._build_context(round_num)
+
+        # Phase 1: Parallel agent responses
+        logger.info("Phase 1: Parallel agent responses")
+
+        # Execute all agents in parallel using asyncio.gather
+        tasks = [
+            self._execute_agent_turn(agent, context, round_num)
+            for agent in agents
+        ]
+
+        try:
+            # Gather all responses in parallel
+            round_novelty_scores = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Filter out exceptions and log errors
+            valid_novelty_scores = []
+            for i, result in enumerate(round_novelty_scores):
+                if isinstance(result, Exception):
+                    logger.error(
+                        "Agent %s failed in round %d: %s",
+                        agents[i].name,
+                        round_num,
+                        result,
+                    )
+                else:
+                    valid_novelty_scores.append(result)
+
+            round_novelty_scores = valid_novelty_scores
+
+        except Exception as e:
+            logger.error("Parallel execution failed in round %d: %s", round_num, e)
+            raise RuntimeError(f"Greedy strategy execution failed: {e!s}") from e
+
+        # Phase 2: Comment-response phase
+        # Each agent responds to other agents' comments
+        logger.info("Phase 2: Comment-response phase (%d × %d responses)", len(agents), len(agents))
+
+        # Get all comments from this round for comment-response phase
+        with get_sync_db() as comment_db:
+            comment_stmt = (
+                select(DBComment)
+                .where(DBComment.meeting_id == self.meeting_id)
+                .where(DBComment.round == round_num)
+                .where(DBComment.is_merged == False)  # noqa: E712
+            )
+            round_comments = comment_db.scalars(comment_stmt).all()
+
+        # Build comment context for response phase
+        if round_comments:
+            comment_context = "\n\n".join([
+                f"[{comment.agent_name}] {comment.text}"
+                for comment in round_comments
+            ])
+
+            # Each agent responds to the collective comments
+            # This creates N² responses total
+            comment_response_tasks = [
+                self._execute_agent_comment_response(
+                    agent, comment_context, round_num
+                )
+                for agent in agents
+            ]
+
+            try:
+                # Execute comment-response phase in parallel
+                comment_novelty_scores = await asyncio.gather(
+                    *comment_response_tasks, return_exceptions=True
+                )
+
+                # Filter out exceptions
+                valid_comment_scores = []
+                for i, result in enumerate(comment_novelty_scores):
+                    if isinstance(result, Exception):
+                        logger.error(
+                            "Agent %s comment-response failed: %s",
+                            agents[i].name,
+                            result,
+                        )
+                    else:
+                        valid_comment_scores.append(result)
+
+                # Include comment-response novelty in average
+                round_novelty_scores.extend(valid_comment_scores)
+
+            except Exception as e:
+                logger.warning("Comment-response phase failed: %s", e)
+                # Non-fatal: continue with initial responses
+
+        # Calculate average novelty for convergence detection
+        avg_novelty = (
+            sum(round_novelty_scores) / len(round_novelty_scores)
+            if round_novelty_scores
+            else 1.0
+        )
+
+        logger.info(
+            "Round %d (greedy) completed: %d total responses, avg_novelty=%.3f",
+            round_num,
+            len(round_novelty_scores),
+            avg_novelty,
+        )
+
+        # Emit per-response RoundCompletedEvents (Sprint 2.5)
+        # This matches the sequential strategy pattern
+        with get_sync_db() as round_db:
+            # Get all responses for this round
+            response_stmt = (
+                select(Response)
+                .where(Response.meeting_id == self.meeting_id)
+                .where(Response.round == round_num)
+            )
+            round_responses = round_db.scalars(response_stmt).all()
+
+            # Emit individual events for each response
+            for response in round_responses:
+                # Get comments for this specific response
+                comment_stmt = (
+                    select(DBComment)
+                    .where(DBComment.meeting_id == self.meeting_id)
+                    .where(DBComment.response_id == response.id)
+                )
+                response_comments = round_db.scalars(comment_stmt).all()
+
+                # Calculate average novelty for this response
+                response_avg_novelty = (
+                    sum(c.novelty_score for c in response_comments) / len(response_comments)
+                    if response_comments
+                    else 0.5  # Default novelty
+                )
+
+                self.emitter.emit(
+                    RoundCompletedEvent(
+                        meeting_id=self.meeting_id,
+                        round_num=round_num,
+                        agent_name=response.agent_name,
+                        response_length=len(response.response_text),
+                        comment_count=len(response_comments),
+                        avg_novelty=response_avg_novelty,
+                        tokens_used=response.tokens_used,
+                        cost=response.cost,
+                    )
+                )
+
+        return avg_novelty
+
+    async def _execute_agent_comment_response(
+        self, agent: Agent, comment_context: str, round_num: int
+    ) -> float:
+        """Execute agent response to collective comments (greedy strategy).
+
+        Args:
+            agent: Agent instance
+            comment_context: Collective comments from all agents
+            round_num: Current round number
+
+        Returns:
+            Novelty score for this response
+        """
+        prefs = get_preferences_manager()
+        agent_model = prefs.get_model_for_agent(
+            agent_name=agent.name,
+            agent_type="domain_expert",
+            cli_override=self.model_override,
+        )
+
+        # Create domain expert for this response
+        domain_expert = DomainExpertAgent(
+            name=agent.name,
+            expertise=agent.expertise or "General expertise",
+            model=agent_model,
+            session_id=f"meeting-{self.meeting_id}-{agent.name}",
+        )
+
+        # Build prompt for comment response
+        comment_response_prompt = (
+            f"Review the following comments from your fellow agents:\n\n{comment_context}\n\n"
+            "Provide your response addressing key points, agreements, or counterpoints. "
+            "Be concise and focused on advancing the discussion."
+        )
+
+        # Execute agent response
+        response_text = domain_expert.respond_to_context(comment_response_prompt)
+
+        # Store response in database
+        with get_sync_db() as db:
+            # Get agent_id from database
+            agent_stmt = select(Agent).where(Agent.name == agent.name)
+            db_agent = db.scalars(agent_stmt).first()
+
+            if not db_agent:
+                logger.warning("Agent %s not found in database", agent.name)
+                return 0.5  # Default novelty
+
+            response = Response(
+                meeting_id=self.meeting_id,
+                agent_id=db_agent.id,
+                round=round_num,
+                agent_name=agent.name,
+                response_text=response_text,
+                tokens_used=domain_expert.get_last_metadata()["tokens_used"],
+                cost=domain_expert.get_last_metadata()["cost"],
+                model_used=agent_model,
+            )
+            db.add(response)
+            db.flush()  # Get response ID
+
+            # Extract comments from response
+            comments = self.notetaker.extract_comments(
+                response_text=response_text,
+                agent_name=agent.name,
+                meeting_id=self.meeting_id,
+                round_num=round_num,
+                response_id=response.id,
+            )
+
+            # Store comments to database
+            db_comments = []
+            for comment in comments:
+                db_comment = DBComment(
+                    meeting_id=self.meeting_id,
+                    response_id=response.id,
+                    round=round_num,
+                    agent_name=agent.name,
+                    text=comment.text,
+                    category=comment.category,
+                    novelty_score=comment.novelty_score,
+                    support_count=1,
+                    is_merged=False,
+                )
+                db.add(db_comment)
+                db_comments.append(db_comment)
+
+            db.commit()
+
+            # Generate and store embeddings for comments (Sprint 3)
+            if db_comments:
+                try:
+                    embedding_service = get_embedding_service()
+
+                    comment_ids = [c.id for c in db_comments]
+                    texts = [c.text for c in db_comments]
+                    agent_names = [c.agent_name for c in db_comments]
+
+                    embedding_service.store_comment_embeddings(
+                        comment_ids=comment_ids,
+                        texts=texts,
+                        meeting_id=str(self.meeting_id),
+                        round_num=round_num,
+                        agent_names=agent_names,
+                    )
+
+                except Exception as e:
+                    logger.warning("Failed to generate embeddings: %s", str(e))
+
+            # Calculate novelty score (average of comment novelty scores)
+            novelty_score = (
+                sum(c.novelty_score for c in comments) / len(comments)
+                if comments
+                else 0.5
+            )
+
+            return novelty_score
+
     async def _build_context(self, current_round: int) -> str:
         """Build cumulative context from previous rounds.
 
@@ -564,12 +1070,10 @@ class MultiAgentMeetingWorkflow:
         agent_id = agent.id
         agent_name = agent.name
 
-        # Get model for this agent using preferences
-        prefs = get_preferences_manager()
-        model_to_use = prefs.get_model_for_agent(
+        # Get model for this agent (considers hybrid model strategy - Story 13)
+        model_to_use = self._get_agent_model(
             agent_name=agent.name,
             agent_type="domain_expert",
-            cli_override=self.model_override,
         )
 
         # Create domain expert (Agno handles its own session persistence)

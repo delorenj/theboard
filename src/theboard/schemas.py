@@ -136,6 +136,7 @@ class MeetingResponse(BaseModel):
     context_size: int
     total_comments: int
     total_cost: float
+    hybrid_models: bool = False  # Sprint 4 Story 13
     created_at: datetime
     updated_at: datetime
 

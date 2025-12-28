@@ -63,10 +63,12 @@ docker compose up -d
 
 This starts:
 - TheBoard application container
-- PostgreSQL (port 5433)
-- Redis (port 6380)
-- Qdrant (ports 6335, 6336)
-- RabbitMQ (ports 5673, 15673)
+- PostgreSQL (host port 5433 → container 5432)
+- Redis (host port 6380 → container 6379)
+- Qdrant (host ports 6333, 6334)
+- RabbitMQ (host port 5673 → container 5672, management 15673 → 15672)
+
+**Note on RabbitMQ:** The containerized RabbitMQ is mapped to port **5673** to avoid conflicts with native RabbitMQ instances. If you already run RabbitMQ natively on port 5672 (as part of Bloodbank or other pipelines), you can skip starting the RabbitMQ container and the app will connect to your native instance via the `RABBITMQ_URL` in `.env`
 
 #### 4. Run CLI commands in container
 
@@ -81,9 +83,9 @@ docker compose exec theboard uv run board run --meeting-id <meeting-id>
 docker compose exec theboard uv run board status --meeting-id <meeting-id>
 ```
 
-### Option 2: Local Development
+### Option 2: Local Development (Using Native Services)
 
-For local development with hot-reloading, you can run just the infrastructure in Docker and the app locally.
+For local development with hot-reloading, you can run just the infrastructure in Docker and the app locally. If you already have some services running natively (like RabbitMQ), you can skip those containers.
 
 #### 1. Clone the repository
 
@@ -104,12 +106,21 @@ Edit `.env` and add your OpenRouter API key:
 OPENROUTER_API_KEY=your_key_here
 ```
 
-#### 3. Start only infrastructure services
+**Important:** If you're using native services (e.g., native RabbitMQ on port 5672), the `.env` file is already configured correctly. Just ensure:
+- `RABBITMQ_URL=amqp://theboard:theboard_rabbit_pass@localhost:5672/` points to your native RabbitMQ
+- Your native RabbitMQ has the credentials configured (user: `theboard`, password: `theboard_rabbit_pass`)
+
+#### 3. Start only required infrastructure services
 
 ```bash
-# Start Postgres, Redis, RabbitMQ, Qdrant
+# Option A: Start only core services (if you have native RabbitMQ)
+docker compose up -d postgres redis qdrant
+
+# Option B: Start all infrastructure services (if you don't have native RabbitMQ)
 docker compose up -d postgres redis rabbitmq qdrant
 ```
+
+**Note:** The containerized RabbitMQ runs on port **5673** (not 5672) to avoid conflicts with native instances.
 
 #### 4. Install Python dependencies
 
@@ -335,6 +346,49 @@ mypy src/
 - Comprehensive documentation
 - Production readiness
 
+## Infrastructure Configuration
+
+### RabbitMQ Setup
+
+TheBoard uses RabbitMQ for event-driven communication (Sprint 4 Story 12). You have two options:
+
+**Option 1: Use Native RabbitMQ (Recommended if you already have it)**
+
+If you run RabbitMQ natively (e.g., as part of Bloodbank or another pipeline), TheBoard will connect to your existing instance:
+
+1. Ensure your native RabbitMQ is running on port **5672** (default)
+2. Create credentials for TheBoard:
+   ```bash
+   rabbitmqctl add_user theboard theboard_rabbit_pass
+   rabbitmqctl set_permissions -p / theboard ".*" ".*" ".*"
+   ```
+3. Your `.env` file is already configured to use `localhost:5672`
+4. Start Docker services **without** RabbitMQ: `docker compose up -d postgres redis qdrant`
+
+**Option 2: Use Containerized RabbitMQ**
+
+If you don't have native RabbitMQ, use the containerized version:
+
+1. The containerized RabbitMQ runs on port **5673** (mapped from container's 5672) to avoid conflicts
+2. Start all services: `docker compose up -d`
+3. Update `.env` to use the containerized instance:
+   ```bash
+   RABBITMQ_URL=amqp://theboard:theboard_rabbit_pass@localhost:5673/
+   ```
+
+**Important:** The containerized RabbitMQ is on port **5673**, not 5672, specifically to avoid conflicts with native instances.
+
+### Port Reference
+
+| Service | Container Port | Host Port (Docker) | Native Port |
+|---------|---------------|-------------------|-------------|
+| PostgreSQL | 5432 | 5433 | 5432 |
+| Redis | 6379 | 6380 | 6379 |
+| RabbitMQ | 5672 | 5673 | 5672 |
+| RabbitMQ Mgmt | 15672 | 15673 | 15672 |
+| Qdrant | 6333 | 6333 | 6333 |
+| Qdrant gRPC | 6334 | 6334 | 6334 |
+
 ## Technologies
 
 - **Python 3.12**: Core language
@@ -348,7 +402,7 @@ mypy src/
 - **PostgreSQL**: Persistent storage
 - **Redis**: Caching and state management
 - **Qdrant**: Vector database for embeddings
-- **RabbitMQ**: Message broker for events
+- **RabbitMQ**: Message broker for events (port 5672 native, 5673 containerized)
 - **Docker**: Containerization
 - **pytest**: Testing framework
 
