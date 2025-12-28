@@ -73,25 +73,28 @@ services:
     restart: unless-stopped
 
   # RabbitMQ 3.12 - Message broker for events
-  rabbitmq:
-    image: rabbitmq:3.12-management-alpine
-    container_name: theboard-rabbitmq
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-theboard}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-theboard_rabbit_pass}
-    ports:
-      - "${RABBITMQ_PORT:-5673}:5672"
-      - "${RABBITMQ_MANAGEMENT_PORT:-15673}:15672"
-    volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
-    networks:
-      - theboard-network
-    healthcheck:
-      test: ["CMD", "rabbitmqctl", "status"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
+  # NOTE: This is OPTIONAL if you already run RabbitMQ natively
+  # Containerized RabbitMQ uses port 5673 (not 5672) to avoid conflicts with native instances
+  # If using native RabbitMQ on port 5672, skip this service and ensure RABBITMQ_URL in .env points to localhost:5672
+  #  rabbitmq:
+  #    image: rabbitmq:3.12-management-alpine
+  #    container_name: theboard-rabbitmq
+  #    environment:
+  #      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-theboard}
+  #      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-theboard_rabbit_pass}
+  #    ports:
+  #      - "${RABBITMQ_PORT:-5673}:5672"  # Host 5673 to avoid conflict with native RabbitMQ on 5672
+  #      - "${RABBITMQ_MANAGEMENT_PORT:-15673}:15672"
+  #    volumes:
+  #      - rabbitmq_data:/var/lib/rabbitmq
+  #    networks:
+  #      - theboard-network
+  #    healthcheck:
+  #      test: ["CMD", "rabbitmqctl", "status"]
+  #      interval: 10s
+  #      timeout: 5s
+  #      retries: 5
+  #    restart: unless-stopped
 
   # Qdrant - Vector database for embeddings
   qdrant:
@@ -105,7 +108,15 @@ services:
     networks:
       - theboard-network
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:6333/healthz"]
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://localhost:6333/healthz",
+        ]
       interval: 10s
       timeout: 5s
       retries: 5

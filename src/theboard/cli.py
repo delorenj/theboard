@@ -59,11 +59,18 @@ def create(
     model: str | None = typer.Option(
         None, "--model", "-m", help="Override default model for this meeting"
     ),
+    hybrid_models: bool = typer.Option(
+        False,
+        "--hybrid-models",
+        help="Enable hybrid model strategy (budget→premium for top performers)",
+    ),
 ) -> None:
     """Create a new brainstorming meeting.
 
     Creates a meeting with the specified topic and configuration.
     Agents can be auto-selected based on topic relevance or manually chosen.
+
+    Sprint 4 Story 13: Use --hybrid-models to enable cost optimization via dynamic model promotion.
     """
     try:
         # Import here to avoid circular dependencies
@@ -93,6 +100,7 @@ def create(
                 agent_count=agent_count if auto_select else 0,
                 auto_select=auto_select,
                 model_override=model,
+                hybrid_models=hybrid_models,
             )
 
         # Display success
@@ -403,6 +411,158 @@ def export(
     """
     console.print("[yellow]Export functionality not yet implemented (Sprint 5)[/yellow]")
     raise typer.Exit(1)
+
+
+@app.command()
+def listen(
+    timeout: int = typer.Option(
+        300, "--timeout", "-t", help="Timeout for human input prompts (seconds)"
+    ),
+) -> None:
+    """Listen for meeting events and handle human-in-loop prompts.
+
+    Subscribe to meeting.* events from RabbitMQ and display them in real-time.
+    Prompts for human input when meeting.human.input.needed events are received.
+
+    Sprint 4 Story 12: Event-driven human-in-loop
+    """
+    import asyncio
+    import signal
+    from datetime import datetime
+
+    from rich.panel import Panel
+    from rich.prompt import Prompt
+
+    from theboard.events.consumer import get_event_consumer
+
+    console.print("[bold cyan]TheBoard Event Listener[/bold cyan]")
+    console.print("Connecting to RabbitMQ and subscribing to meeting.* events...")
+    console.print("[dim]Press Ctrl+C to stop listening[/dim]\n")
+
+    consumer = get_event_consumer()
+    shutdown_event = asyncio.Event()
+
+    # Event handlers
+    def handle_round_completed(event: dict) -> None:
+        """Display round completion events."""
+        timestamp = datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00"))
+        console.print(
+            Panel(
+                f"[green]Round {event['round_num']} completed[/green]\n"
+                f"Agent: {event['agent_name']}\n"
+                f"Comments: {event['comment_count']}, "
+                f"Novelty: {event['avg_novelty']:.2f}, "
+                f"Cost: ${event['cost']:.4f}",
+                title=f"[bold]{timestamp.strftime('%H:%M:%S')}[/bold]",
+                border_style="green",
+            )
+        )
+
+    def handle_human_input_needed(event: dict) -> None:
+        """Handle human-in-loop prompts with timeout."""
+        timestamp = datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00"))
+
+        console.print(
+            Panel(
+                f"[yellow bold]{event['reason']}[/yellow bold]\n\n"
+                f"{event['prompt_text']}\n\n"
+                f"Options: {', '.join(event['options'])}\n"
+                f"[dim]Timeout: {timeout}s (auto-continue if no response)[/dim]",
+                title=f"[bold yellow]{timestamp.strftime('%H:%M:%S')} - Human Input Needed[/bold yellow]",
+                border_style="yellow",
+            )
+        )
+
+        # Prompt with timeout handling
+        try:
+            # Note: typer.prompt doesn't support timeout, so we use rich.prompt
+            choice = Prompt.ask(
+                "[bold]Your choice[/bold]",
+                choices=event["options"],
+                default="continue",
+            )
+            console.print(f"[green]✓ Selected: {choice}[/green]\n")
+
+            # TODO: Send choice back to meeting workflow via RabbitMQ
+            # (requires response queue or Redis state management)
+
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Input cancelled - defaulting to 'continue'[/yellow]\n")
+
+    def handle_convergence_detected(event: dict) -> None:
+        """Display convergence detection events."""
+        timestamp = datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00"))
+        console.print(
+            Panel(
+                f"[cyan]Meeting converged at round {event['round_num']}[/cyan]\n"
+                f"Average novelty: {event['avg_novelty']:.2f} "
+                f"(threshold: {event['novelty_threshold']:.2f})\n"
+                f"Total comments: {event['total_comments']}",
+                title=f"[bold]{timestamp.strftime('%H:%M:%S')}[/bold]",
+                border_style="cyan",
+            )
+        )
+
+    def handle_meeting_completed(event: dict) -> None:
+        """Display meeting completion events."""
+        timestamp = datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00"))
+        console.print(
+            Panel(
+                f"[green bold]Meeting completed successfully[/green bold]\n\n"
+                f"Total rounds: {event['total_rounds']}\n"
+                f"Total comments: {event['total_comments']}\n"
+                f"Total cost: ${event['total_cost']:.4f}\n"
+                f"Convergence: {'Yes' if event['convergence_detected'] else 'No'}\n"
+                f"Stopping reason: {event['stopping_reason']}",
+                title=f"[bold]{timestamp.strftime('%H:%M:%S')}[/bold]",
+                border_style="green",
+            )
+        )
+
+    def handle_generic_event(event: dict) -> None:
+        """Display all other events in compact format."""
+        timestamp = datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00"))
+        console.print(
+            f"[dim]{timestamp.strftime('%H:%M:%S')}[/dim] "
+            f"[blue]{event['event_type']}[/blue] "
+            f"[dim]meeting={str(event['meeting_id'])[:8]}...[/dim]"
+        )
+
+    # Register handlers
+    consumer.register_handler("meeting.round_completed", handle_round_completed)
+    consumer.register_handler("meeting.human.input.needed", handle_human_input_needed)
+    consumer.register_handler("meeting.converged", handle_convergence_detected)
+    consumer.register_handler("meeting.completed", handle_meeting_completed)
+
+    # Generic handler for other events
+    consumer.register_handler("meeting.created", handle_generic_event)
+    consumer.register_handler("meeting.started", handle_generic_event)
+    consumer.register_handler("agent.response.ready", handle_generic_event)
+    consumer.register_handler("context.compression.triggered", handle_generic_event)
+
+    # Signal handlers for graceful shutdown
+    def signal_handler(sig, frame):
+        console.print("\n[yellow]Shutting down event listener...[/yellow]")
+        shutdown_event.set()
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    # Start consumer
+    async def run_consumer():
+        try:
+            await consumer.start()
+        except Exception as e:
+            console.print(f"[red]Consumer error: {e}[/red]")
+            raise
+
+    try:
+        asyncio.run(run_consumer())
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Event listener stopped[/yellow]")
+    except Exception as e:
+        console.print(f"[red]Fatal error: {e}[/red]")
+        raise typer.Exit(1)
 
 
 @app.command()

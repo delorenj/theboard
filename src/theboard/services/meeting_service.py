@@ -29,6 +29,7 @@ def create_meeting(
     agent_count: int,
     auto_select: bool,
     model_override: str | None = None,
+    hybrid_models: bool = False,
 ) -> MeetingResponse:
     """Create a new brainstorming meeting.
 
@@ -39,6 +40,7 @@ def create_meeting(
         agent_count: Number of agents to select (if auto_select)
         auto_select: Whether to auto-select agents based on topic
         model_override: CLI model override (--model flag)
+        hybrid_models: Enable hybrid model strategy (Story 13)
 
     Returns:
         MeetingResponse with created meeting details
@@ -55,7 +57,7 @@ def create_meeting(
 
     with get_sync_db() as db:
         try:
-            # Create meeting with model override
+            # Create meeting with model override and hybrid models flag
             meeting = Meeting(
                 topic=topic,
                 strategy=strategy.value,
@@ -64,6 +66,7 @@ def create_meeting(
                 status=MeetingStatus.CREATED.value,
                 convergence_detected=False,
                 model_override=model_override,  # Store CLI override for workflow
+                hybrid_models=hybrid_models,  # Sprint 4 Story 13
             )
 
             db.add(meeting)
