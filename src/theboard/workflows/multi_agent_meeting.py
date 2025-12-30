@@ -52,6 +52,7 @@ class MultiAgentMeetingWorkflow:
         model_override: str | None = None,
         novelty_threshold: float = 0.3,
         enable_compression: bool = True,
+        compression_threshold: int = 10000,
     ) -> None:
         """Initialize multi-agent workflow.
 
@@ -60,11 +61,17 @@ class MultiAgentMeetingWorkflow:
             model_override: Optional CLI model override (--model flag)
             novelty_threshold: Convergence threshold for novelty scores (default 0.3)
             enable_compression: Enable comment compression (default True, Sprint 3)
+            compression_threshold: Context size threshold for lazy compression (default 10000 chars, Sprint 5)
         """
         self.meeting_id = meeting_id
         self.model_override = model_override
         self.novelty_threshold = novelty_threshold
         self.enable_compression = enable_compression
+        self.compression_threshold = compression_threshold
+        self.compression_trigger_count = 0  # Track how many times compression was triggered
+
+        # Sprint 5 Story 16: Delta propagation - track what each agent has seen
+        self.agent_last_seen_round: dict[str, int] = {}  # agent_id -> last round they saw
 
         # Initialize event emitter (Sprint 2.5)
         self.emitter = get_event_emitter()
@@ -162,38 +169,56 @@ class MultiAgentMeetingWorkflow:
                 # Execute round with all agents sequentially
                 avg_novelty = await self._execute_round(agents, round_num)
 
-                # Sprint 3 Story 9: Compress comments after each round
+                # Sprint 5 Story 16: Lazy compression - only compress when context > threshold
                 if self.enable_compression and self.compressor:
-                    try:
-                        compression_metrics = self.compressor.compress_comments(
-                            meeting_id=self.meeting_id,
-                            round_num=round_num,
-                        )
-                        logger.info(
-                            "Round %d compression: %d → %d comments (%.1f%% reduction)",
-                            round_num,
-                            compression_metrics.original_count,
-                            compression_metrics.compressed_count,
-                            compression_metrics.reduction_percentage,
-                        )
+                    # Check current context size to decide if compression is needed
+                    with get_sync_db() as check_db:
+                        check_stmt = select(Meeting).where(Meeting.id == self.meeting_id)
+                        check_meeting = check_db.scalars(check_stmt).first()
+                        current_context_size = check_meeting.context_size if check_meeting else 0
 
-                        # Update meeting compression metrics
-                        with get_sync_db() as compression_db:
-                            compression_stmt = select(Meeting).where(Meeting.id == self.meeting_id)
-                            compression_meeting = compression_db.scalars(compression_stmt).first()
-                            if compression_meeting:
-                                # Track compression cost
-                                compressor_metadata = self.compressor.get_last_metadata()
-                                compression_meeting.total_cost += compressor_metadata["cost"]
-                                compression_db.commit()
+                    # Only compress if context exceeds threshold (lazy compression)
+                    if current_context_size > self.compression_threshold:
+                        self.compression_trigger_count += 1
+                        try:
+                            compression_metrics = self.compressor.compress_comments(
+                                meeting_id=self.meeting_id,
+                                round_num=round_num,
+                            )
+                            logger.info(
+                                "Round %d lazy compression triggered (context=%d > threshold=%d): %d → %d comments (%.1f%% reduction)",
+                                round_num,
+                                current_context_size,
+                                self.compression_threshold,
+                                compression_metrics.original_count,
+                                compression_metrics.compressed_count,
+                                compression_metrics.reduction_percentage,
+                            )
 
-                    except Exception as e:
-                        # Non-fatal: compression failure doesn't block workflow
-                        logger.warning(
-                            "Compression failed for round %d: %s",
+                            # Update meeting compression metrics
+                            with get_sync_db() as compression_db:
+                                compression_stmt = select(Meeting).where(Meeting.id == self.meeting_id)
+                                compression_meeting = compression_db.scalars(compression_stmt).first()
+                                if compression_meeting:
+                                    # Track compression cost
+                                    compressor_metadata = self.compressor.get_last_metadata()
+                                    compression_meeting.total_cost += compressor_metadata["cost"]
+                                    compression_db.commit()
+
+                        except Exception as e:
+                            # Non-fatal: compression failure doesn't block workflow
+                            logger.warning(
+                                "Compression failed for round %d: %s",
+                                round_num,
+                                str(e),
+                                exc_info=True,
+                            )
+                    else:
+                        logger.debug(
+                            "Round %d: skipping compression (context=%d < threshold=%d)",
                             round_num,
-                            str(e),
-                            exc_info=True,
+                            current_context_size,
+                            self.compression_threshold,
                         )
 
                 # Check convergence
@@ -403,20 +428,24 @@ class MultiAgentMeetingWorkflow:
         """
         logger.info("Executing round %d with %d agents", round_num, len(agents))
 
-        # Build cumulative context from previous rounds
-        context = await self._build_context(round_num)
-
         # Execute each agent sequentially
         round_novelty_scores = []
 
         for agent in agents:
             try:
+                # Sprint 5 Story 16: Build delta context for this specific agent
+                # This reduces token usage by only sending new comments since their last turn
+                agent_context = await self._build_context(round_num, agent_id=str(agent.id))
+
                 # Execute agent response and extract comments
                 # (NO session held during LLM calls - Sprint 1.5 pattern)
                 agent_novelty = await self._execute_agent_turn(
-                    agent, context, round_num
+                    agent, agent_context, round_num
                 )
                 round_novelty_scores.append(agent_novelty)
+
+                # Update agent's last seen round for delta propagation
+                self.agent_last_seen_round[str(agent.id)] = round_num
 
             except Exception as e:
                 logger.error(
@@ -483,17 +512,23 @@ class MultiAgentMeetingWorkflow:
 
         return avg_novelty
 
-    async def _build_context(self, current_round: int) -> str:
-        """Build cumulative context from previous rounds.
+    async def _build_context(self, current_round: int, agent_id: str | None = None) -> str:
+        """Build cumulative context from previous rounds with optional delta propagation.
 
         Context Structure:
         - Round 1: Topic only
-        - Round 2+: Topic + all comments from previous rounds
+        - Round 2+: Topic + comments (all or delta based on agent tracking)
 
-        Formula: Context_r = Topic + Σ(Comments from rounds 1 to r-1)
+        Sprint 5 Story 16: Delta propagation - if agent_id provided, only include
+        comments since agent's last seen round to reduce token usage.
+
+        Formula:
+        - Full: Context_r = Topic + Σ(Comments from rounds 1 to r-1)
+        - Delta: Context_r = Topic + Σ(Comments from rounds last_seen+1 to r-1)
 
         Args:
             current_round: Current round number
+            agent_id: Optional agent ID for delta propagation (Sprint 5)
 
         Returns:
             Formatted context string
@@ -513,16 +548,29 @@ class MultiAgentMeetingWorkflow:
 
             # Add comments from previous rounds
             if current_round > 1:
+                # Sprint 5: Determine starting round for delta propagation
+                if agent_id and agent_id in self.agent_last_seen_round:
+                    start_round = self.agent_last_seen_round[agent_id] + 1
+                    is_delta = True
+                else:
+                    start_round = 1
+                    is_delta = False
+
                 comment_stmt = (
                     select(DBComment)
                     .where(DBComment.meeting_id == self.meeting_id)
+                    .where(DBComment.round >= start_round)
                     .where(DBComment.round < current_round)
                     .order_by(DBComment.round, DBComment.created_at)
                 )
                 prev_comments = db.scalars(comment_stmt).all()
 
                 if prev_comments:
-                    context_parts.append("\nPrevious Discussion:\n")
+                    if is_delta:
+                        context_parts.append(f"\nNew Comments (since round {start_round}):\n")
+                    else:
+                        context_parts.append("\nPrevious Discussion:\n")
+
                     for comment in prev_comments:
                         context_parts.append(
                             f"[Round {comment.round}, {comment.agent_name}] "
@@ -530,7 +578,12 @@ class MultiAgentMeetingWorkflow:
                         )
 
             context = "".join(context_parts)
-            logger.debug("Built context for round %d: %d chars", current_round, len(context))
+            logger.debug(
+                "Built context for round %d%s: %d chars",
+                current_round,
+                f" (delta for agent {agent_id})" if agent_id and agent_id in self.agent_last_seen_round else "",
+                len(context),
+            )
 
             return context
 
