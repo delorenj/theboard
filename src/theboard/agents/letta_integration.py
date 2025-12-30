@@ -17,10 +17,13 @@ Memory Types:
 """
 
 import json
+import os
 from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from qdrant_client import AsyncQdrantClient
+from qdrant_client.models import Distance, PointStruct, VectorParams, Filter, FieldCondition, MatchValue
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,13 +33,49 @@ from theboard.models.meeting import Agent, AgentMemory, Meeting
 class LettaMemoryManager:
     """Manages agent memory persistence and retrieval for Letta integration."""
 
-    def __init__(self, db_session: AsyncSession):
-        """Initialize memory manager with database session.
+    COLLECTION_NAME = "agent_memories"
+    EMBEDDING_DIM = 1536  # OpenAI text-embedding-ada-002 dimension
+
+    def __init__(
+        self,
+        db_session: AsyncSession,
+        qdrant_url: str | None = None,
+        qdrant_api_key: str | None = None,
+    ):
+        """Initialize memory manager with database session and Qdrant client.
 
         Args:
             db_session: SQLAlchemy async session for database operations
+            qdrant_url: Qdrant server URL (default: from QDRANT_URL env or localhost)
+            qdrant_api_key: Qdrant API key (default: from QDRANT_API_KEY env)
         """
         self.db = db_session
+        self.qdrant_url = qdrant_url or os.getenv("QDRANT_URL", "http://localhost:6333")
+        self.qdrant_api_key = qdrant_api_key or os.getenv("QDRANT_API_KEY")
+        self.qdrant_client = AsyncQdrantClient(
+            url=self.qdrant_url,
+            api_key=self.qdrant_api_key,
+        )
+
+    async def ensure_collection_exists(self) -> None:
+        """Ensure Qdrant collection exists with proper schema.
+
+        Creates collection if it doesn't exist with:
+        - Vector size: 1536 (OpenAI ada-002)
+        - Distance metric: Cosine similarity
+        - Payload schema: agent_id, memory_type, created_at
+        """
+        collections = await self.qdrant_client.get_collections()
+        collection_names = [c.name for c in collections.collections]
+
+        if self.COLLECTION_NAME not in collection_names:
+            await self.qdrant_client.create_collection(
+                collection_name=self.COLLECTION_NAME,
+                vectors_config=VectorParams(
+                    size=self.EMBEDDING_DIM,
+                    distance=Distance.COSINE,
+                ),
+            )
 
     async def store_memory(
         self,
@@ -78,6 +117,25 @@ class LettaMemoryManager:
         self.db.add(memory)
         await self.db.commit()
         await self.db.refresh(memory)
+
+        # Store embedding in Qdrant if provided
+        if embedding:
+            await self.ensure_collection_exists()
+            await self.qdrant_client.upsert(
+                collection_name=self.COLLECTION_NAME,
+                points=[
+                    PointStruct(
+                        id=str(memory.id),  # Use memory UUID as Qdrant point ID
+                        vector=embedding,
+                        payload={
+                            "agent_id": str(agent_id),
+                            "meeting_id": str(meeting_id),
+                            "memory_type": memory_type,
+                            "created_at": memory.created_at.isoformat(),
+                        },
+                    )
+                ],
+            )
 
         return memory
 
@@ -122,47 +180,71 @@ class LettaMemoryManager:
         query_embedding: list[float],
         limit: int = 5,
         memory_type: str | None = None,
+        score_threshold: float = 0.7,
     ) -> list[AgentMemory]:
-        """Recall agent memories using vector similarity search.
+        """Recall agent memories using vector similarity search via Qdrant.
 
         Args:
             agent_id: UUID of the agent
             query_embedding: Vector embedding of the query (current meeting topic/context)
             limit: Maximum number of memories to return (default: 5)
             memory_type: Optional filter by memory type
+            score_threshold: Minimum similarity score (0.0-1.0, default: 0.7)
 
         Returns:
             List of AgentMemory records, ordered by similarity score DESC
 
         Note:
-            This uses PostgreSQL's vector similarity functions.
-            For production, integrate with Qdrant for scalable similarity search.
+            Uses Qdrant for scalable vector similarity search.
             Story 14 acceptance criteria: <1s latency with 100+ meetings.
         """
-        # TODO: Integrate with Qdrant for production vector search
-        # For now, use simple PostgreSQL array operations
-        # In production, query Qdrant collection 'agent_memories' with:
-        # - filter: agent_id, memory_type
-        # - query_vector: query_embedding
-        # - limit: limit
-        # - score_threshold: 0.7 (configurable)
+        await self.ensure_collection_exists()
 
-        # Placeholder implementation - will be replaced with Qdrant in next iteration
-        query = select(AgentMemory).where(
-            AgentMemory.agent_id == agent_id, AgentMemory.embedding.isnot(None)
-        )
+        # Build Qdrant filter conditions
+        filter_conditions = [
+            FieldCondition(
+                key="agent_id",
+                match=MatchValue(value=str(agent_id)),
+            )
+        ]
 
         if memory_type:
-            query = query.where(AgentMemory.memory_type == memory_type)
+            filter_conditions.append(
+                FieldCondition(
+                    key="memory_type",
+                    match=MatchValue(value=memory_type),
+                )
+            )
 
-        query = query.order_by(AgentMemory.created_at.desc()).limit(limit)
+        # Query Qdrant for similar memories
+        search_result = await self.qdrant_client.search(
+            collection_name=self.COLLECTION_NAME,
+            query_vector=query_embedding,
+            query_filter=Filter(must=filter_conditions) if filter_conditions else None,
+            limit=limit,
+            score_threshold=score_threshold,
+        )
 
+        # Extract memory IDs from Qdrant results
+        memory_ids = [UUID(point.id) for point in search_result]
+
+        if not memory_ids:
+            return []
+
+        # Fetch full AgentMemory records from PostgreSQL
+        query = select(AgentMemory).where(AgentMemory.id.in_(memory_ids))
         result = await self.db.execute(query)
         memories = list(result.scalars().all())
 
-        # TODO: Calculate cosine similarity and re-rank
-        # For now, return by recency
-        return memories
+        # Re-order memories by Qdrant similarity score
+        memory_dict = {mem.id: mem for mem in memories}
+        sorted_memories = [
+            memory_dict[UUID(point.id)]
+            for point in search_result
+            if UUID(point.id) in memory_dict
+        ]
+
+        return sorted_memories
 
     async def get_agent_context(
         self, agent_id: UUID, meeting_topic: str, limit: int = 5
@@ -241,6 +323,35 @@ class LettaMemoryManager:
         # TODO: Implement LLM-based memory extraction
         # For now, return empty list (manual memory storage via store_memory)
         return []
+
+    async def delete_memory(self, memory_id: UUID) -> None:
+        """Delete a memory from both PostgreSQL and Qdrant.
+
+        Args:
+            memory_id: UUID of the memory to delete
+        """
+        # Delete from Qdrant
+        try:
+            await self.qdrant_client.delete(
+                collection_name=self.COLLECTION_NAME,
+                points_selector=[str(memory_id)],
+            )
+        except Exception:
+            # Log error but continue - memory might not have embedding
+            pass
+
+        # Delete from PostgreSQL
+        query = select(AgentMemory).where(AgentMemory.id == memory_id)
+        result = await self.db.execute(query)
+        memory = result.scalar_one_or_none()
+
+        if memory:
+            await self.db.delete(memory)
+            await self.db.commit()
+
+    async def close(self) -> None:
+        """Close Qdrant client connection."""
+        await self.qdrant_client.close()
 
 
 class LettaAgentAdapter:
