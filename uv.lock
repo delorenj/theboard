@@ -638,6 +638,23 @@ wheels = [
 ]
 
 [[package]]
+name = "letta-client"
+version = "1.6.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "distro" },
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "sniffio" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f7/38/bbaaa26d0cfdabeaa13a99d0a0e94a6b1a23414df96a7e575bad141427b1/letta_client-1.6.2.tar.gz", hash = "sha256:eb243808dd17f36b093194af1728167c012f55a8edf53a593cdd207b666504fb", size = 255075, upload-time = "2025-12-22T23:08:42.905Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e8/e0/98609b457e7d633e01e166cfc9342d1bdcaec6dcda1935353340c0c1b2db/letta_client-1.6.2-py3-none-any.whl", hash = "sha256:cb6cde942860cbe33b02c0170790a42a681038e907f2cff82357eaa453a9b1ac", size = 393194, upload-time = "2025-12-22T23:08:41.349Z" },
+]
+
+[[package]]
 name = "librt"
 version = "0.7.4"
 source = { registry = "https://pypi.org/simple" }
@@ -2013,6 +2030,7 @@ dependencies = [
     { name = "alembic" },
     { name = "anthropic" },
     { name = "asyncio" },
+    { name = "letta-client" },
     { name = "networkx" },
     { name = "openai" },
     { name = "psycopg", extra = ["binary"] },
@@ -2049,6 +2067,7 @@ requires-dist = [
     { name = "anthropic", specifier = ">=0.34.0" },
     { name = "asyncio", specifier = ">=3.4.3" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27.0" },
+    { name = "letta-client", specifier = ">=1.6.2" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8.0" },
     { name = "networkx", specifier = ">=3.0.0" },
     { name = "openai", specifier = ">=2.14.0" },

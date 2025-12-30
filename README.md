@@ -94,21 +94,11 @@ git clone <repository-url>
 cd theboard
 ```
 
-#### 2. Set up environment
-
-```bash
-cp .env.example .env
-```
-
-Edit `.env` and add your OpenRouter API key:
-
-```bash
-OPENROUTER_API_KEY=your_key_here
-```
-
-**Important:** If you're using native services (e.g., native RabbitMQ on port 5672), the `.env` file is already configured correctly. Just ensure:
-- `RABBITMQ_URL=amqp://theboard:theboard_rabbit_pass@localhost:5672/` points to your native RabbitMQ
-- Your native RabbitMQ has the credentials configured (user: `theboard`, password: `theboard_rabbit_pass`)
+1.  Ensure you have a `.env` file based on `.env.example`
+2.  Set your `OPENROUTER_API_KEY` and optionally `DEFAULT_USERNAME`/`DEFAULT_PASSWORD`
+3.  If using native RabbitMQ, ensure it is running and accessible:
+    - `RABBITMQ_URL=amqp://${DEFAULT_USERNAME}:${DEFAULT_PASSWORD}@localhost:5672/` points to your native RabbitMQ
+    - Your native RabbitMQ has the credentials configured (user: `${DEFAULT_USERNAME}`, password: `${DEFAULT_PASSWORD}`)
 
 #### 3. Start only required infrastructure services
 
@@ -357,11 +347,13 @@ TheBoard uses RabbitMQ for event-driven communication (Sprint 4 Story 12). You h
 If you run RabbitMQ natively (e.g., as part of Bloodbank or another pipeline), TheBoard will connect to your existing instance:
 
 1. Ensure your native RabbitMQ is running on port **5672** (default)
-2. Create credentials for TheBoard:
-   ```bash
-   rabbitmqctl add_user theboard theboard_rabbit_pass
-   rabbitmqctl set_permissions -p / theboard ".*" ".*" ".*"
-   ```
+2. Create credentials for TheBoard (using your `DEFAULT_USERNAME` and `DEFAULT_PASSWORD`):
+
+```bash
+rabbitmqctl add_user <DEFAULT_USERNAME> <DEFAULT_PASSWORD>
+rabbitmqctl set_permissions -p / <DEFAULT_USERNAME> ".*" ".*" ".*"
+```
+
 3. Your `.env` file is already configured to use `localhost:5672`
 4. Start Docker services **without** RabbitMQ: `docker compose up -d postgres redis qdrant`
 
@@ -373,7 +365,7 @@ If you don't have native RabbitMQ, use the containerized version:
 2. Start all services: `docker compose up -d`
 3. Update `.env` to use the containerized instance:
    ```bash
-   RABBITMQ_URL=amqp://theboard:theboard_rabbit_pass@localhost:5673/
+   RABBITMQ_URL=amqp://${DEFAULT_USERNAME}:${DEFAULT_PASSWORD}@localhost:5673/
    ```
 
 **Important:** The containerized RabbitMQ is on port **5673**, not 5672, specifically to avoid conflicts with native instances.
