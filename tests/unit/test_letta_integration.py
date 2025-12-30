@@ -1,7 +1,11 @@
 """Unit tests for Letta integration (Story 14)."""
 
 import pytest
-from uuid import uuid4
+import sys
+from pathlib import Path
+
+# Add src to path to import letta_integration directly without triggering agents package
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 from theboard.agents.letta_integration import LettaMemoryManager, LettaAgentAdapter
 from theboard.models.meeting import Agent, AgentMemory

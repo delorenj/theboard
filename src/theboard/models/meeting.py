@@ -94,7 +94,7 @@ class Agent(Base):
     agent_type: Mapped[str] = mapped_column(
         String(20), nullable=False, default="plaintext", server_default="plaintext"
     )
-    letta_definition: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    letta_definition: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     is_active: Mapped[bool] = mapped_column(default=True, server_default="true")
 
     # Model assignment
@@ -262,11 +262,10 @@ class AgentMemory(Base):
 
     # Memory details
     memory_type: Mapped[str] = mapped_column(String(50), nullable=False)  # decision, pattern, context, learning
-    content: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)  # Memory content as JSON
+    content: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)  # Memory content as JSON (JSONB in Postgres)
     relevance_score: Mapped[float | None] = mapped_column(nullable=True)  # Vector similarity score
-    embedding: Mapped[list[float] | None] = mapped_column(
-        type_=sa.dialects.postgresql.ARRAY(sa.Float), nullable=True
-    )  # Vector embedding for similarity search
+    # embedding stored as JSON array for SQLite compatibility, ARRAY for Postgres
+    embedding: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)  # Vector embedding for similarity search
 
     # Relationships
     agent: Mapped["Agent"] = relationship("Agent", back_populates="memories")
