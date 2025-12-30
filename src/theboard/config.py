@@ -1,21 +1,86 @@
 """Configuration management for TheBoard application."""
 
 from functools import lru_cache
-from typing import Literal
+import os
+from pathlib import Path
+from typing import Any, Iterable, Literal
 
+from dotenv import dotenv_values
 from pydantic import Field, PostgresDsn, RedisDsn
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings.sources import PydanticBaseSettingsSource, YamlConfigSettingsSource
+import yaml
+
+CONFIG_DIR = Path.home() / ".config" / "theboard"
+USER_CONFIG_FILE = CONFIG_DIR / "config.yml"
+REPO_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
+REPO_ENV_EXAMPLE_FILE = Path(__file__).resolve().parents[2] / ".env.example"
+CWD_ENV_FILE = Path.cwd() / ".env"
+
+
+def _unique_paths(paths: Iterable[Path]) -> tuple[Path, ...]:
+    seen: set[Path] = set()
+    ordered: list[Path] = []
+    for path in paths:
+        resolved = path.expanduser().resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        ordered.append(path)
+    return tuple(ordered)
+
+
+def _dotenv_candidates() -> tuple[Path, ...]:
+    """Return dotenv candidates in ascending precedence order."""
+    candidates: list[Path] = []
+    env_override = os.getenv("THEBOARD_ENV_FILE")
+    if env_override:
+        candidates.append(Path(env_override).expanduser())
+    candidates.extend([CWD_ENV_FILE, REPO_ENV_FILE, REPO_ENV_EXAMPLE_FILE])
+    return _unique_paths(candidates)
+
+
+def _config_file_candidates() -> tuple[str, ...]:
+    """Return config.yml candidates in ascending precedence order."""
+    candidates: list[Path] = []
+    config_override = os.getenv("THEBOARD_CONFIG_FILE")
+    if config_override:
+        candidates.append(Path(config_override).expanduser())
+    candidates.append(USER_CONFIG_FILE)
+    return tuple(str(path) for path in _unique_paths(candidates))
 
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=tuple(str(path) for path in _dotenv_candidates()),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
     )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Prefer env vars, then config.yml, then dotenv for settings."""
+        yaml_source = YamlConfigSettingsSource(
+            settings_cls,
+            yaml_file=_config_file_candidates(),
+        )
+        return (
+            init_settings,
+            env_settings,
+            yaml_source,
+            dotenv_settings,
+            file_secret_settings,
+        )
 
     # Application
     environment: Literal["development", "staging", "production"] = "development"
@@ -96,4 +161,44 @@ def get_settings() -> Settings:
 
 
 # Global settings instance
+def _filter_dotenv_for_settings(dotenv_data: dict[str, str | None]) -> dict[str, str]:
+    settings_keys = set(Settings.model_fields.keys())
+    filtered: dict[str, str] = {}
+    for key, value in dotenv_data.items():
+        if value is None:
+            continue
+        normalized_key = key.lower()
+        if normalized_key in settings_keys:
+            filtered[normalized_key] = value
+    return filtered
+
+
+def _write_yaml_config(config_path: Path, data: dict[str, Any]) -> None:
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(config_path, "w", encoding="utf-8") as handle:
+        yaml.safe_dump(data, handle, sort_keys=True)
+
+
+def _bootstrap_user_config() -> None:
+    if os.getenv("THEBOARD_SKIP_CONFIG_BOOTSTRAP"):
+        return
+
+    config_path = Path(_config_file_candidates()[0]).expanduser()
+    if config_path.exists():
+        return
+
+    for candidate in _dotenv_candidates():
+        if not candidate.exists():
+            continue
+        dotenv_data = dotenv_values(candidate)
+        filtered = _filter_dotenv_for_settings(dotenv_data)
+        if filtered:
+            _write_yaml_config(config_path, filtered)
+            return
+
+    defaults = Settings.model_construct().model_dump()
+    _write_yaml_config(config_path, defaults)
+
+
+_bootstrap_user_config()
 settings = get_settings()
