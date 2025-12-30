@@ -13,7 +13,18 @@ logger = logging.getLogger(__name__)
 
 
 class RedisManager:
-    """Manages Redis connections and provides caching utilities."""
+    """Manages Redis connections and provides caching utilities.
+
+    Sprint 5 Story 16: Optimized TTL values for different cache types:
+    - Meeting state: 7 days (long-lived, needed for history)
+    - Context: 2 days (working data, regenerable)
+    - Metrics: 7 days (historical data)
+    """
+
+    # Sprint 5 Story 16: Configurable TTL values (seconds)
+    TTL_MEETING_STATE = 604800  # 7 days - long-lived state
+    TTL_CONTEXT = 172800  # 2 days - shorter for working context
+    TTL_METRICS = 604800  # 7 days - historical metrics
 
     def __init__(self) -> None:
         """Initialize Redis connection."""
@@ -64,18 +75,20 @@ class RedisManager:
             return False
 
     def set_meeting_state(
-        self, meeting_id: str, state: dict[str, Any], ttl: int = 604800
+        self, meeting_id: str, state: dict[str, Any], ttl: int | None = None
     ) -> bool:
         """Set meeting state in Redis.
 
         Args:
             meeting_id: Meeting UUID
             state: Meeting state dictionary
-            ttl: Time to live in seconds (default: 7 days)
+            ttl: Time to live in seconds (default: TTL_MEETING_STATE)
 
         Returns:
             True if successful, False otherwise
         """
+        if ttl is None:
+            ttl = self.TTL_MEETING_STATE
         try:
             key = f"meeting:{meeting_id}:state"
             serialized = json.dumps(state)
@@ -105,18 +118,20 @@ class RedisManager:
             return None
 
     def set_context(
-        self, meeting_id: str, context: str, ttl: int = 604800
+        self, meeting_id: str, context: str, ttl: int | None = None
     ) -> bool:
         """Set meeting context in Redis.
 
         Args:
             meeting_id: Meeting UUID
             context: Context string
-            ttl: Time to live in seconds (default: 7 days)
+            ttl: Time to live in seconds (default: TTL_CONTEXT - Sprint 5 optimized to 2 days)
 
         Returns:
             True if successful, False otherwise
         """
+        if ttl is None:
+            ttl = self.TTL_CONTEXT  # Sprint 5: Shorter TTL for regenerable context
         try:
             key = f"meeting:{meeting_id}:context"
             self.client.setex(key, ttl, context)
@@ -145,7 +160,7 @@ class RedisManager:
             return None
 
     def set_compression_metrics(
-        self, meeting_id: str, round_num: int, metrics: dict[str, Any], ttl: int = 604800
+        self, meeting_id: str, round_num: int, metrics: dict[str, Any], ttl: int | None = None
     ) -> bool:
         """Set compression metrics for a meeting round.
 
@@ -153,11 +168,13 @@ class RedisManager:
             meeting_id: Meeting UUID
             round_num: Round number
             metrics: Compression metrics dictionary
-            ttl: Time to live in seconds (default: 7 days)
+            ttl: Time to live in seconds (default: TTL_METRICS)
 
         Returns:
             True if successful, False otherwise
         """
+        if ttl is None:
+            ttl = self.TTL_METRICS
         try:
             key = f"meeting:{meeting_id}:compression:{round_num}"
             serialized = json.dumps(metrics)
