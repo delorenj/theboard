@@ -2,14 +2,23 @@
 
 A sophisticated multi-agent system for simulating brainstorming sessions with AI agents, featuring intelligent comment extraction, context management, and convergence detection.
 
-## Features (Sprint 1 MVP)
+## Features
 
+### Sprint 1 (MVP)
 - **Single-Agent Execution**: Run brainstorming sessions with domain expert agents
 - **Intelligent Comment Extraction**: Automatically extract and categorize key insights
 - **Persistent Storage**: PostgreSQL database for meetings, agents, responses, and comments
 - **State Management**: Redis caching for meeting state and context
 - **CLI Interface**: Rich terminal interface for creating and managing meetings
 - **Structured Data**: Pydantic models for type-safe data validation
+
+### Sprint 5 (Current)
+- **Letta Agent Integration**: Cross-meeting memory persistence with vector search
+- **Qdrant Vector Database**: Fast similarity search (<1s latency with 100+ meetings)
+- **Agent Migration Tools**: CLI for migrating plaintext agents to Letta
+- **Hybrid Agent Support**: Seamless compatibility with both plaintext and Letta agents
+- **Memory Management**: Store and recall decisions, patterns, context, and learnings
+- **See [Letta Integration Guide](docs/LETTA_INTEGRATION.md) for details**
 
 ## Architecture
 
