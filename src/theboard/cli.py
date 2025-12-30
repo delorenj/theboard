@@ -155,7 +155,6 @@ def _run_with_live_progress(meeting_id: UUID, interactive: bool, rerun: bool) ->
         table.add_column("Round", style="cyan", justify="center", width=8)
         table.add_column("Status", style="yellow", justify="center", width=12)
         table.add_column("Comments", style="green", justify="right", width=10)
-        table.add_column("Avg Novelty", style="blue", justify="right", width=12)
         table.add_column("Context Size", style="white", justify="right", width=14)
 
         # Query current meeting state
@@ -166,9 +165,8 @@ def _run_with_live_progress(meeting_id: UUID, interactive: bool, rerun: bool) ->
             if meeting:
                 table.add_row(
                     f"{meeting.current_round}/{meeting.max_rounds}",
-                    meeting.status.value,
+                    meeting.status,
                     str(meeting.total_comments),
-                    f"{meeting.avg_novelty_score:.2f}" if meeting.avg_novelty_score else "N/A",
                     f"{meeting.context_size:,}",
                 )
 
