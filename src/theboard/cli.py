@@ -12,7 +12,7 @@ from rich.table import Table
 
 from theboard.cli_commands.config import config_app
 from theboard.config import settings
-from theboard.schemas import MeetingStatus, StrategyType
+from theboard.schemas import MeetingResponse, MeetingStatus, StrategyType
 
 # Initialize Typer app
 app = typer.Typer(
@@ -116,6 +116,79 @@ def create(
         logger.exception("Failed to create meeting")
         console.print(f"[red]Error: {e!s}[/red]")
         raise typer.Exit(1) from e
+
+
+def _run_with_live_progress(meeting_id: UUID, interactive: bool, rerun: bool) -> MeetingResponse:
+    """Run meeting with live progress display (Sprint 6 Story 17).
+
+    Displays real-time updates: round, agent, comment count, novelty score.
+    Uses Rich.Live() for smooth updates.
+    """
+    import threading
+    import time
+    from rich.live import Live
+    from rich.table import Table
+    from theboard.services.meeting_service import run_meeting
+    from theboard.database import get_sync_db
+    from theboard.models.meeting import Meeting as DBMeeting
+    from sqlalchemy import select
+
+    # Shared state
+    result = None
+    error = None
+    running = threading.Event()
+    running.set()
+
+    def run_meeting_thread():
+        """Execute meeting in background thread."""
+        nonlocal result, error
+        try:
+            result = run_meeting(meeting_id=meeting_id, interactive=interactive, rerun=rerun)
+        except Exception as e:
+            error = e
+        finally:
+            running.clear()
+
+    def generate_progress_table() -> Table:
+        """Generate progress table from current database state."""
+        table = Table(title="Meeting Progress", show_header=True, header_style="bold magenta")
+        table.add_column("Round", style="cyan", justify="center", width=8)
+        table.add_column("Status", style="yellow", justify="center", width=12)
+        table.add_column("Comments", style="green", justify="right", width=10)
+        table.add_column("Avg Novelty", style="blue", justify="right", width=12)
+        table.add_column("Context Size", style="white", justify="right", width=14)
+
+        # Query current meeting state
+        with get_sync_db() as db:
+            stmt = select(DBMeeting).where(DBMeeting.id == meeting_id)
+            meeting = db.scalars(stmt).first()
+
+            if meeting:
+                table.add_row(
+                    f"{meeting.current_round}/{meeting.max_rounds}",
+                    meeting.status.value,
+                    str(meeting.total_comments),
+                    f"{meeting.avg_novelty_score:.2f}" if meeting.avg_novelty_score else "N/A",
+                    f"{meeting.context_size:,}",
+                )
+
+        return table
+
+    # Start meeting execution in background thread
+    thread = threading.Thread(target=run_meeting_thread, daemon=True)
+    thread.start()
+
+    # Display live progress updates
+    with Live(generate_progress_table(), refresh_per_second=2, console=console) as live:
+        while running.is_set():
+            time.sleep(0.5)  # Poll every 500ms
+            live.update(generate_progress_table())
+
+    # Check for errors
+    if error:
+        raise error
+
+    return result
 
 
 @app.command()
@@ -244,9 +317,8 @@ def run(
             action = "Rerunning" if rerun else "Starting"
             console.print(f"\n[bold]{action} meeting {uuid_id}...[/bold]\n")
 
-        # Run meeting (with rerun flag if specified)
-        with console.status("[bold green]Running meeting...", spinner="dots"):
-            result = run_meeting(meeting_id=uuid_id, interactive=interactive, rerun=rerun)
+        # Run meeting with live progress updates (Sprint 6 Story 17)
+        result = _run_with_live_progress(uuid_id, interactive, rerun)
 
         # Display completion
         console.print(
