@@ -39,6 +39,7 @@ dependencies = [
     "tenacity>=8.5.0",
     "asyncio>=3.4.3",
     "openai>=2.14.0",
+    "letta-client>=1.6.2",
 ]
 
 [project.optional-dependencies]

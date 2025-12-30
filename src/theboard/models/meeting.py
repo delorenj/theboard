@@ -3,6 +3,7 @@
 from typing import Any
 from uuid import UUID, uuid4
 
+import sqlalchemy as sa
 from sqlalchemy import (
     JSON,
     CheckConstraint,
@@ -244,7 +245,7 @@ class ConvergenceMetric(Base):
 
 
 class AgentMemory(Base):
-    """Stores agent memory for cross-meeting recall (Letta integration)."""
+    """Stores agent memory for cross-meeting recall (Letta integration - Story 14)."""
 
     __tablename__ = "agent_memory"
 
@@ -255,30 +256,37 @@ class AgentMemory(Base):
     agent_id: Mapped[UUID] = mapped_column(
         ForeignKey("agents.id", ondelete="CASCADE"), nullable=False
     )
+    meeting_id: Mapped[UUID] = mapped_column(
+        ForeignKey("meetings.id", ondelete="CASCADE"), nullable=False
+    )
 
     # Memory details
-    memory_type: Mapped[str] = mapped_column(String(50), nullable=False)
-    memory_key: Mapped[str] = mapped_column(String(200), nullable=False)
-    memory_value: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
-
-    # Context
-    related_meeting_id: Mapped[UUID | None] = mapped_column(
-        PG_UUID(as_uuid=True), nullable=True
-    )
-    related_topic: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    memory_type: Mapped[str] = mapped_column(String(50), nullable=False)  # decision, pattern, context, learning
+    content: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)  # Memory content as JSON
+    relevance_score: Mapped[float | None] = mapped_column(nullable=True)  # Vector similarity score
+    embedding: Mapped[list[float] | None] = mapped_column(
+        type_=sa.dialects.postgresql.ARRAY(sa.Float), nullable=True
+    )  # Vector embedding for similarity search
 
     # Relationships
     agent: Mapped["Agent"] = relationship("Agent", back_populates="memories")
+    meeting: Mapped["Meeting"] = relationship("Meeting")
 
     # Indexes
     __table_args__ = (
         CheckConstraint(
-            "memory_type IN ('previous_meeting', 'learned_pattern', 'decision')",
+            "memory_type IN ('decision', 'pattern', 'context', 'learning')",
             name="ck_agent_memory_type",
         ),
+        CheckConstraint(
+            "relevance_score >= 0.0 AND relevance_score <= 1.0",
+            name="ck_agent_memory_relevance",
+        ),
         Index("ix_agent_memory_agent_id", "agent_id"),
+        Index("ix_agent_memory_meeting_id", "meeting_id"),
+        Index("ix_agent_memory_created_at", "created_at"),
         Index("ix_agent_memory_type", "memory_type"),
-        Index("ix_agent_memory_key", "memory_key"),
+        Index("ix_agent_memory_relevance", "relevance_score"),
     )
 
 

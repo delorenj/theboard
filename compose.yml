@@ -15,9 +15,9 @@ services:
       qdrant:
         condition: service_healthy
     environment:
-      - DATABASE_URL=postgresql+psycopg://theboard:theboard_dev_pass@postgres:5432/theboard
-      - REDIS_URL=redis://:theboard_redis_pass@redis:6379
-      - RABBITMQ_URL=amqp://theboard:theboard_rabbit_pass@rabbitmq:5672
+      - DATABASE_URL=postgresql+psycopg://${POSTGRES_USER:-${DEFAULT_USERNAME:-theboard}}:${POSTGRES_PASSWORD:-${DEFAULT_PASSWORD:-theboard_dev_pass}}@postgres:5432/${POSTGRES_DB:-${DEFAULT_DATABASE:-theboard}}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-${DEFAULT_PASSWORD:-theboard_redis_pass}}@redis:6379
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-${DEFAULT_USERNAME:-theboard}}:${RABBITMQ_PASSWORD:-${DEFAULT_PASSWORD:-theboard_rabbit_pass}}@rabbitmq:5672
       - QDRANT_URL=http://qdrant:6333
       - QDRANT_API_KEY=${QDRANT_API_KEY:-}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
@@ -38,9 +38,9 @@ services:
     image: postgres:15-alpine
     container_name: theboard-postgres
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-theboard}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-theboard_dev_pass}
-      POSTGRES_DB: ${POSTGRES_DB:-theboard}
+      POSTGRES_USER: ${POSTGRES_USER:-${DEFAULT_USERNAME:-theboard}}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-${DEFAULT_PASSWORD:-theboard_dev_pass}}
+      POSTGRES_DB: ${POSTGRES_DB:-${DEFAULT_DATABASE:-theboard}}
     ports:
       - "${POSTGRES_PORT:-5433}:5432"
     volumes:
@@ -48,7 +48,7 @@ services:
     networks:
       - theboard-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-theboard}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-${DEFAULT_USERNAME:-theboard}}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -58,7 +58,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: theboard-redis
-    command: redis-server --requirepass ${REDIS_PASSWORD:-theboard_redis_pass}
+    command: redis-server --requirepass ${REDIS_PASSWORD:-${DEFAULT_PASSWORD:-theboard_redis_pass}}
     ports:
       - "${REDIS_PORT:-6380}:6379"
     volumes:
@@ -80,8 +80,8 @@ services:
   #    image: rabbitmq:3.12-management-alpine
   #    container_name: theboard-rabbitmq
   #    environment:
-  #      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-theboard}
-  #      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-theboard_rabbit_pass}
+  #      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-${DEFAULT_USERNAME:-theboard}}
+  #      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-${DEFAULT_PASSWORD:-theboard_rabbit_pass}}
   #    ports:
   #      - "${RABBITMQ_PORT:-5673}:5672"  # Host 5673 to avoid conflict with native RabbitMQ on 5672
   #      - "${RABBITMQ_MANAGEMENT_PORT:-15673}:15672"
