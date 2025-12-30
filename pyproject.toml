@@ -1,6 +1,6 @@
 [project]
 name = "theboard"
-version = "1.1.0"
+version = "2.0.0"
 description = "Multi-Agent Brainstorming Simulation System"
 readme = "README.md"
 authors = [{ name = "Jarad DeLorenzo", email = "jaradd@gmail.com" }]
