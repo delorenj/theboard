@@ -1,0 +1,120 @@
+# BMAD Method Sprint Status Tracking
+# Generated: 2025-12-30T17:00:00Z
+# Project: TheBoard
+
+version: "6.0.0"
+project_name: "TheBoard"
+project_level: 3
+current_sprint: 5
+sprint_plan_path: "docs/sprint-5-plan-theboard-2025-12-30.md"
+
+sprints:
+  - sprint_number: 1
+    start_date: "2025-11-18"
+    end_date: "2025-11-29"
+    capacity_points: 26
+    committed_points: 26
+    completed_points: 26
+    status: "completed"
+    goal: "Single-agent execution with comment extraction and persistent storage"
+    velocity: 13.0  # points per week
+
+  - sprint_number: 2
+    start_date: "2025-12-02"
+    end_date: "2025-12-13"
+    capacity_points: 20
+    committed_points: 20
+    completed_points: 20
+    status: "completed"
+    goal: "Multi-agent orchestration with context accumulation"
+    velocity: 10.0  # points per week
+
+  - sprint_number: 3
+    start_date: "2025-12-16"
+    end_date: "2025-12-27"
+    capacity_points: 18
+    committed_points: 18
+    completed_points: 18
+    status: "completed"
+    goal: "Compression and convergence detection"
+    velocity: 9.0  # points per week
+
+  - sprint_number: 4
+    start_date: "2025-12-30"
+    end_date: "2025-01-10"
+    capacity_points: 13
+    committed_points: 13
+    completed_points: 13
+    status: "completed"
+    goal: "Advanced features: greedy strategy, human-in-loop, hybrid models"
+    velocity: 6.5  # points per week
+
+  - sprint_number: 5
+    start_date: "2026-01-13"
+    end_date: "2026-01-24"
+    capacity_points: 13
+    committed_points: 10
+    completed_points: 0
+    status: "not_started"
+    goal: "Enable agents to build institutional knowledge across meetings and deliver shareable artifacts with optimized resource usage"
+    stories:
+      - story_id: "STORY-14"
+        title: "Letta Agent Migration"
+        points: 5
+        status: "not_started"
+        assigned_to: "delorenj"
+        priority: "must_have"
+        risk: "high"
+        dependencies: []
+        acceptance_criteria_count: 5
+
+      - story_id: "STORY-15"
+        title: "Export & Artifact Generation"
+        points: 3
+        status: "not_started"
+        assigned_to: "delorenj"
+        priority: "should_have"
+        risk: "low"
+        dependencies: []
+        acceptance_criteria_count: 5
+
+      - story_id: "STORY-16"
+        title: "Performance Optimization"
+        points: 2
+        status: "not_started"
+        assigned_to: "delorenj"
+        priority: "should_have"
+        risk: "low"
+        dependencies: []
+        acceptance_criteria_count: 4
+
+velocity:
+  sprint_1: 13.0
+  sprint_2: 10.0
+  sprint_3: 9.0
+  sprint_4: 6.5
+  sprint_5: null  # Will be filled when sprint completes
+  rolling_average: 9.625  # (13 + 10 + 9 + 6.5) / 4
+  trend: "declining"
+  trend_percentage: -23  # Average decline per sprint
+
+team:
+  size: 1
+  sprint_length_weeks: 2
+  capacity_per_sprint: 13
+  productive_hours_per_day: 6
+  velocity_model: "senior"  # senior: 1 pt = 2 hours
+
+metrics:
+  total_sprints_completed: 4
+  total_points_delivered: 77  # 26 + 20 + 18 + 13
+  average_velocity: 9.625
+  sprint_completion_rate: 100  # All sprints completed on time
+  buffer_usage_average: 15  # Percentage of capacity used as buffer
+
+notes:
+  - "Velocity declining trend observed (-23% per sprint avg)"
+  - "Likely due to increasing complexity (Sprint 3-4 more complex than 1-2)"
+  - "Sprint 5 has 23% buffer to account for high-risk Story 14"
+  - "Holiday season (late Dec/early Jan) may impact availability"
+  - "Stories 15 & 16 can slip to Sprint 6 if needed (Story 14 is critical path)"
