@@ -390,19 +390,91 @@ def status(
 def export(
     meeting_id: str = typer.Argument(..., help="Meeting ID to export"),
     format: str = typer.Option(
-        "markdown", "--format", "-f", help="Export format: markdown, json, or html"
+        "markdown", "--format", "-f", help="Export format: markdown, json, html, or template"
     ),
     output: Path | None = typer.Option(
         None, "--output", "-o", help="Output file path (optional)"
+    ),
+    template: str | None = typer.Option(
+        None, "--template", "-t", help="Template name for template format"
     ),
 ) -> None:
     """Export meeting results to file.
 
     Generates formatted artifacts from meeting data.
-    Supports markdown, JSON, and HTML formats.
+    Supports markdown, JSON, HTML, and custom template formats.
     """
-    console.print("[yellow]Export functionality not yet implemented (Sprint 5)[/yellow]")
-    raise typer.Exit(1)
+    try:
+        # Import here to avoid circular dependencies
+        from theboard.services.export_service import ExportService
+
+        # Parse meeting ID
+        try:
+            uuid_id = UUID(meeting_id)
+        except ValueError as e:
+            console.print(f"[red]Error: Invalid meeting ID format: {meeting_id}[/red]")
+            raise typer.Exit(1) from e
+
+        # Validate format
+        valid_formats = ["markdown", "json", "html", "template"]
+        if format not in valid_formats:
+            console.print(
+                f"[red]Error: Invalid format '{format}'. Must be one of: {', '.join(valid_formats)}[/red]"
+            )
+            raise typer.Exit(1)
+
+        # Validate template requirement
+        if format == "template" and not template:
+            console.print(
+                "[red]Error: --template is required when using template format[/red]"
+            )
+            raise typer.Exit(1)
+
+        # Auto-generate output path if not provided
+        if output is None:
+            extensions = {
+                "markdown": "md",
+                "json": "json",
+                "html": "html",
+                "template": "txt",
+            }
+            ext = extensions.get(format, "txt")
+            output = Path(f"meeting_{meeting_id}_{format}.{ext}")
+
+        # Initialize export service
+        export_service = ExportService()
+
+        # Export based on format
+        with console.status(f"[bold green]Exporting as {format}...", spinner="dots"):
+            if format == "markdown":
+                result = export_service.export_markdown(uuid_id, output)
+            elif format == "json":
+                result = export_service.export_json(uuid_id, output)
+            elif format == "html":
+                result = export_service.export_html(uuid_id, output)
+            elif format == "template":
+                result = export_service.export_with_template(uuid_id, template, output)
+
+        # Display success
+        console.print(
+            Panel.fit(
+                f"[green]✓[/green] Export completed successfully!\\n\\n"
+                f"[bold]Meeting ID:[/bold] {uuid_id}\\n"
+                f"[bold]Format:[/bold] {format}\\n"
+                + (f"[bold]Template:[/bold] {template}\\n" if template else "")
+                + f"[bold]Output:[/bold] {output}\\n"
+                f"[bold]Size:[/bold] {len(result):,} characters",
+                title="[bold green]Export Complete[/bold green]",
+                border_style="green",
+            )
+        )
+
+        console.print(f"\\n[dim]View the exported file at:[/dim] [bold]{output}[/bold]")
+
+    except Exception as e:
+        logger.exception("Failed to export meeting")
+        console.print(f"[red]Error: {e!s}[/red]")
+        raise typer.Exit(1) from e
 
 
 @app.command()
