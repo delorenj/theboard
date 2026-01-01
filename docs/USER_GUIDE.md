@@ -108,6 +108,142 @@ Agents can be auto-selected based on topic relevance or manually chosen.
 
 ---
 
+## Agent Pool Management
+
+TheBoard includes a powerful agent pool management system that allows you to create, manage, and organize AI agents with diverse expertise.
+
+### Seeding Initial Agent Pool
+
+To get started with a pre-configured pool of 10 diverse agents, run:
+
+```bash
+python scripts/seed_agents.py
+```
+
+This creates agents including: backend-architect, frontend-specialist, devops-engineer, security-analyst, data-architect, ml-engineer, product-manager, ux-designer, qa-engineer, and tech-lead.
+
+### Listing Agents
+
+View all agents in the pool:
+
+```bash
+board agents list
+```
+
+View only active agents:
+
+```bash
+board agents list --active-only
+```
+
+### Creating Individual Agents
+
+Create a custom agent:
+
+```bash
+board agents create \
+  --name "cloud-architect" \
+  --expertise "Expert in AWS, Azure, GCP cloud architecture and multi-cloud strategies" \
+  --persona "Cost-conscious architect who balances scalability with budget constraints" \
+  --background "10+ years managing cloud infrastructure for Fortune 500 companies" \
+  --type plaintext \
+  --model deepseek
+```
+
+### Viewing Agent Details
+
+Get detailed information about a specific agent:
+
+```bash
+board agents show backend-architect
+```
+
+Or use the agent's UUID:
+
+```bash
+board agents show a0742ce4-4078-4a0e-b4d8-b457a89cdf79
+```
+
+### Importing Agents from File
+
+Create multiple agents at once from a YAML or JSON file:
+
+```bash
+board agents import data/agents/initial_pool.yaml
+```
+
+**Example YAML format:**
+
+```yaml
+- name: devops-specialist
+  expertise: |
+    Expert in CI/CD, container orchestration, and infrastructure automation.
+    Strong knowledge of Docker, Kubernetes, and cloud platforms.
+  persona: |
+    Automation-first mindset focused on reliability and reproducibility.
+  background: |
+    Built deployment pipelines for high-traffic applications.
+  agent_type: plaintext
+  default_model: deepseek
+```
+
+### Updating Agents
+
+Modify an existing agent:
+
+```bash
+board agents update backend-architect \
+  --expertise "Updated expertise description" \
+  --model gpt-4-turbo
+```
+
+### Deactivating and Activating Agents
+
+Temporarily deactivate an agent (soft delete):
+
+```bash
+board agents deactivate backend-architect
+```
+
+Reactivate a deactivated agent:
+
+```bash
+board agents activate backend-architect
+```
+
+### Deleting Agents
+
+Permanently delete an agent (use with caution):
+
+```bash
+board agents delete backend-architect --force
+```
+
+Without `--force`, agents are only deactivated:
+
+```bash
+board agents delete backend-architect
+```
+
+### Agent Selection
+
+When creating a meeting with `--auto-select`, agents are automatically selected based on keyword matching between the meeting topic and agent expertise. The selection algorithm:
+
+1. Extracts keywords from the topic
+2. Matches keywords against agent expertise, persona, and background
+3. Ranks agents by relevance score
+4. Selects top-matching agents
+
+**Example:**
+
+```bash
+board create --topic "Design a scalable microservices backend with database sharding and caching"
+```
+
+This will automatically select agents like backend-architect, data-architect, and devops-engineer based on keywords: "microservices", "backend", "database", "caching".
+
+---
+
 ## Example Scenarios
 
 ### Scenario 1: Simple Sequential Meeting
