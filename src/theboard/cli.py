@@ -10,6 +10,7 @@ from rich.logging import RichHandler
 from rich.panel import Panel
 from rich.table import Table
 
+from theboard.cli_commands.agents import agents_app
 from theboard.cli_commands.config import config_app
 from theboard.config import settings
 from theboard.schemas import MeetingResponse, MeetingStatus, StrategyType
@@ -21,17 +22,29 @@ app = typer.Typer(
     add_completion=False,
 )
 
-# Register config command group
+# Register command groups
+app.add_typer(agents_app, name="agents")
 app.add_typer(config_app, name="config")
 
 # Initialize Rich console
 console = Console()
 
 # Configure logging
+log_file = Path("debug.log")
+
+file_handler = logging.FileHandler(log_file)
+file_handler.setFormatter(
+    logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+)
+
 logging.basicConfig(
     level=settings.log_level,
     format="%(message)s",
-    handlers=[RichHandler(rich_tracebacks=True, console=console)],
+    handlers=[
+        RichHandler(rich_tracebacks=True, console=console),
+        file_handler,
+    ],
+    force=True,
 )
 logger = logging.getLogger(__name__)
 
