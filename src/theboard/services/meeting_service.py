@@ -1,6 +1,8 @@
 """Service layer for meeting management."""
 
 import logging
+import re
+from pathlib import Path
 from uuid import UUID
 
 from sqlalchemy import delete, desc, select
@@ -17,6 +19,7 @@ from theboard.schemas import (
     ResponseSummary,
     StrategyType,
 )
+from theboard.services.export_service import ExportService
 from theboard.utils.redis_manager import get_redis_manager
 
 logger = logging.getLogger(__name__)
@@ -181,6 +184,28 @@ def run_meeting(meeting_id: UUID, interactive: bool, rerun: bool = False) -> Mee
 
         if not final_meeting:
             raise ValueError(f"Meeting not found after execution: {meeting_id}")
+
+        # Auto-export meeting log
+        try:
+            export_service = ExportService()
+            logs_dir = Path("logs/meetings")
+            logs_dir.mkdir(parents=True, exist_ok=True)
+
+            # Create safe filename from topic
+            safe_topic = re.sub(r"[^a-zA-Z0-9]", "_", final_meeting.topic)[:50]
+            timestamp = (
+                final_meeting.created_at.strftime("%Y%m%d_%H%M%S")
+                if final_meeting.created_at
+                else "unknown"
+            )
+            filename = f"meeting_{timestamp}_{safe_topic}_{final_meeting.id}.md"
+            output_path = logs_dir / filename
+
+            export_service.export_markdown(final_meeting.id, output_path)
+            logger.info("Auto-generated meeting log at %s", output_path)
+
+        except Exception as e:
+            logger.error("Failed to auto-generate meeting log: %s", e)
 
         return MeetingResponse.model_validate(final_meeting)
 
