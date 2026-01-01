@@ -214,3 +214,142 @@ def config_init(
         logger.exception("Failed to initialize configuration")
         console.print(f"[red]Error: {e!s}[/red]")
         raise typer.Exit(1) from e
+
+
+@config_app.command("validate")
+def config_validate() -> None:
+    """Validate configuration and test service connectivity."""
+    from pathlib import Path
+
+    from theboard.config import (
+        CONFIG_DIR,
+        USER_CONFIG_FILE,
+        _config_file_candidates,
+        _dotenv_candidates,
+        get_settings,
+    )
+
+    try:
+        settings = get_settings()
+
+        # Configuration sources table
+        sources_table = Table(title="Configuration Sources", show_header=True)
+        sources_table.add_column("Source Type", style="bold cyan")
+        sources_table.add_column("Path", style="yellow")
+        sources_table.add_column("Status", style="green")
+
+        # Check config file
+        config_candidates = _config_file_candidates()
+        config_file = Path(config_candidates[0]) if config_candidates else None
+        if config_file and config_file.exists():
+            sources_table.add_row("Config YAML", str(config_file), "✓ Found")
+        else:
+            sources_table.add_row("Config YAML", str(CONFIG_DIR / "config.yml"), "✗ Not found")
+
+        # Check .env files
+        for env_file in _dotenv_candidates():
+            if env_file.exists():
+                sources_table.add_row(".env file", str(env_file), "✓ Found")
+
+        console.print(sources_table)
+        console.print()
+
+        # Settings validation table
+        settings_table = Table(title="Configuration Settings", show_header=True)
+        settings_table.add_column("Category", style="bold cyan")
+        settings_table.add_column("Setting", style="cyan")
+        settings_table.add_column("Value", style="yellow")
+        settings_table.add_column("Status", style="green")
+
+        # Database settings
+        settings_table.add_row("Database", "URL", str(settings.database_url), "✓")
+        settings_table.add_row("", "Host", settings.postgres_host, "✓")
+        settings_table.add_row("", "Port", str(settings.postgres_port), "✓")
+        settings_table.add_row("", "Database", settings.postgres_db, "✓")
+
+        # Redis settings
+        settings_table.add_row("Redis", "URL", str(settings.redis_url), "✓")
+        settings_table.add_row("", "Host", settings.redis_host, "✓")
+        settings_table.add_row("", "Port", str(settings.redis_port), "✓")
+
+        # Qdrant settings
+        settings_table.add_row("Qdrant", "URL", settings.qdrant_url, "✓")
+        settings_table.add_row("", "Host", settings.qdrant_host, "✓")
+        settings_table.add_row("", "Port", str(settings.qdrant_port), "✓")
+
+        # RabbitMQ settings
+        if settings.event_emitter == "rabbitmq":
+            settings_table.add_row("RabbitMQ", "URL", settings.rabbitmq_url, "✓")
+            settings_table.add_row("", "Host", settings.rabbitmq_host, "✓")
+            settings_table.add_row("", "Port", str(settings.rabbitmq_port), "✓")
+
+        # OpenRouter settings
+        api_key_status = "✓ Set" if settings.openrouter_api_key else "✗ Not set"
+        settings_table.add_row("OpenRouter", "API Key", "***" if settings.openrouter_api_key else "(not set)", api_key_status)
+        settings_table.add_row("", "Base URL", settings.openrouter_base_url, "✓")
+
+        console.print(settings_table)
+        console.print()
+
+        # Service connectivity tests
+        connectivity_table = Table(title="Service Connectivity", show_header=True)
+        connectivity_table.add_column("Service", style="bold cyan")
+        connectivity_table.add_column("Status", style="yellow")
+        connectivity_table.add_column("Details", style="white")
+
+        # Test PostgreSQL
+        try:
+            from sqlalchemy import text
+
+            from theboard.database import sync_engine
+
+            with sync_engine.connect() as conn:
+                result = conn.execute(text("SELECT version()"))
+                version = result.fetchone()[0]
+                pg_version = version.split("PostgreSQL ")[1].split(" ")[0] if "PostgreSQL" in version else "Unknown"
+                connectivity_table.add_row("PostgreSQL", "✓ Connected", f"Version {pg_version}")
+        except Exception as e:
+            connectivity_table.add_row("PostgreSQL", "✗ Failed", str(e)[:50])
+
+        # Test Redis
+        try:
+            from theboard.utils.redis_manager import get_redis_manager
+
+            redis_mgr = get_redis_manager()
+            redis_mgr.client.ping()
+            connectivity_table.add_row("Redis", "✓ Connected", "Ping successful")
+        except Exception as e:
+            connectivity_table.add_row("Redis", "✗ Failed", str(e)[:50])
+
+        # Test Qdrant
+        try:
+            from qdrant_client import QdrantClient
+
+            qdrant = QdrantClient(
+                url=settings.qdrant_url,
+                api_key=settings.qdrant_api_key if settings.qdrant_api_key else None,
+            )
+            collections = qdrant.get_collections()
+            connectivity_table.add_row(
+                "Qdrant", "✓ Connected", f"{len(collections.collections)} collections"
+            )
+        except Exception as e:
+            connectivity_table.add_row("Qdrant", "✗ Failed", str(e)[:50])
+
+        console.print(connectivity_table)
+        console.print()
+
+        console.print(
+            Panel.fit(
+                "[green]Configuration validation complete![/green]\n\n"
+                "Check the tables above for any issues.\n"
+                f"Config file: [cyan]{config_file}[/cyan]",
+                title="[bold green]Validation Summary[/bold green]",
+                border_style="green",
+            )
+        )
+
+    except Exception as e:
+        logger.exception("Failed to validate configuration")
+        console.print(f"[red]Error: {e!s}[/red]")
+        raise typer.Exit(1) from e
