@@ -81,6 +81,7 @@ alembic/versions/*
 # Project specific
 .claude/
 .swarm/
+.swarm/memory.db
 .bmad/
 exports/
 temp/
