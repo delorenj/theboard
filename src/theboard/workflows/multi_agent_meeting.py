@@ -51,6 +51,7 @@ class MultiAgentMeetingWorkflow:
         meeting_id: UUID,
         model_override: str | None = None,
         novelty_threshold: float = 0.3,
+        min_rounds: int = 2,
         enable_compression: bool = True,
         compression_threshold: int = 10000,
     ) -> None:
@@ -60,12 +61,14 @@ class MultiAgentMeetingWorkflow:
             meeting_id: Meeting UUID
             model_override: Optional CLI model override (--model flag)
             novelty_threshold: Convergence threshold for novelty scores (default 0.3)
+            min_rounds: Minimum rounds before convergence can be detected (default 2)
             enable_compression: Enable comment compression (default True, Sprint 3)
             compression_threshold: Context size threshold for lazy compression (default 10000 chars, Sprint 5)
         """
         self.meeting_id = meeting_id
         self.model_override = model_override
         self.novelty_threshold = novelty_threshold
+        self.min_rounds = min_rounds
         self.enable_compression = enable_compression
         self.compression_threshold = compression_threshold
         self.compression_trigger_count = 0  # Track how many times compression was triggered
@@ -221,13 +224,14 @@ class MultiAgentMeetingWorkflow:
                             self.compression_threshold,
                         )
 
-                # Check convergence
-                if avg_novelty < self.novelty_threshold:
+                # Check convergence (only after minimum rounds)
+                if round_num >= self.min_rounds and avg_novelty < self.novelty_threshold:
                     logger.info(
-                        "Convergence detected at round %d (novelty=%.3f < threshold=%.3f)",
+                        "Convergence detected at round %d (novelty=%.3f < threshold=%.3f, min_rounds=%d satisfied)",
                         round_num,
                         avg_novelty,
                         self.novelty_threshold,
+                        self.min_rounds,
                     )
                     converged = True
 
@@ -248,6 +252,13 @@ class MultiAgentMeetingWorkflow:
                             )
 
                     break
+                elif round_num < self.min_rounds:
+                    logger.debug(
+                        "Round %d: convergence check skipped (min_rounds=%d not reached, current novelty=%.3f)",
+                        round_num,
+                        self.min_rounds,
+                        avg_novelty,
+                    )
 
             # Update meeting status
             with get_sync_db() as final_db:
