@@ -122,7 +122,7 @@ def create(
         )
 
         console.print(
-            f"\n[dim]Run the meeting with:[/dim] [bold]board run {meeting.id}[/bold]"
+            f"\n[dim]Run the meeting with:[/dim] [bold]board run --last[/bold] [dim](or select from [bold]board run[/bold])[/dim]"
         )
 
     except Exception as e:
@@ -252,7 +252,7 @@ def run(
                     console.print("[red]Error: No meetings found. Create one with 'board create'[/red]")
                     raise typer.Exit(1)
                 uuid_id = meetings[0].id
-                console.print(f"[dim]Using most recent meeting:[/dim] {meetings[0].topic[:60]}")
+                console.print(f"[dim]Using most recent meeting:[/dim] {meetings[0].topic}")
             else:
                 # Show interactive selector
                 meetings = list_recent_meetings(limit=20)
@@ -280,7 +280,7 @@ def run(
                         details = "Ready to run"
 
                     console.print(
-                        f"  {i}. {meeting.topic[:60]} "
+                        f"  {i}. {meeting.topic} "
                         f"[{status_color}]({meeting.status.value})[/{status_color}] "
                         f"[dim]- {details}[/dim]"
                     )
@@ -293,7 +293,7 @@ def run(
                 )
                 selected = meetings[int(choice) - 1]
                 uuid_id = selected.id
-                console.print(f"[dim]Selected:[/dim] {selected.topic[:60]}\n")
+                console.print(f"[dim]Selected:[/dim] {selected.topic}\n")
         else:
             # Meeting ID provided - parse it
             try:
@@ -350,7 +350,7 @@ def run(
         )
 
         console.print(
-            f"\n[dim]View details with:[/dim] [bold]board status {uuid_id}[/bold]"
+            f"\n[dim]View details with:[/dim] [bold]board status[/bold] [dim](or [bold]board status --last[/bold])[/dim]"
         )
 
     except Exception as e:
@@ -361,28 +361,89 @@ def run(
 
 @app.command()
 def status(
-    meeting_id: str = typer.Argument(..., help="Meeting ID to check"),
+    meeting_id: str | None = typer.Argument(None, help="Meeting ID to check (optional - shows selector if omitted)"),
     show_comments: bool = typer.Option(
         True, "--comments/--no-comments", help="Show recent comments"
     ),
     show_metrics: bool = typer.Option(
         True, "--metrics/--no-metrics", help="Show convergence metrics"
     ),
+    last: bool = typer.Option(
+        False, "--last", help="Show status of most recent meeting"
+    ),
 ) -> None:
     """Display meeting status and details.
 
     Shows meeting state, responses, comments, and convergence metrics.
+    If no meeting ID is provided, shows an interactive selector.
+    Use --last to show the most recent meeting without selection.
     """
     try:
         # Import here to avoid circular dependencies
-        from theboard.services.meeting_service import get_meeting_status
+        from rich.prompt import Prompt
+        from theboard.services.meeting_service import get_meeting_status, list_recent_meetings
 
-        # Parse meeting ID
-        try:
-            uuid_id = UUID(meeting_id)
-        except ValueError as e:
-            console.print(f"[red]Error: Invalid meeting ID format: {meeting_id}[/red]")
-            raise typer.Exit(1) from e
+        # Determine meeting ID
+        uuid_id: UUID
+
+        if meeting_id is None:
+            # No meeting ID provided - show selector or use --last
+            if last:
+                # Get most recent meeting
+                meetings = list_recent_meetings(limit=1)
+                if not meetings:
+                    console.print("[red]Error: No meetings found. Create one with 'board create'[/red]")
+                    raise typer.Exit(1)
+                uuid_id = meetings[0].id
+                console.print(f"[dim]Showing most recent meeting:[/dim] {meetings[0].topic}\n")
+            else:
+                # Show interactive selector
+                meetings = list_recent_meetings(limit=20)
+                if not meetings:
+                    console.print("[red]Error: No meetings found. Create one with 'board create'[/red]")
+                    raise typer.Exit(1)
+
+                # Display meetings
+                console.print("\n[bold]Recent Meetings:[/bold]\n")
+                for i, meeting in enumerate(meetings, 1):
+                    status_color = {
+                        "created": "cyan",
+                        "running": "yellow",
+                        "paused": "blue",
+                        "completed": "green",
+                        "failed": "red",
+                    }.get(meeting.status.value, "white")
+
+                    # Format display based on status
+                    if meeting.status.value == "completed":
+                        details = f"${meeting.total_cost:.2f} - {meeting.current_round} rounds"
+                    elif meeting.status.value == "failed":
+                        details = f"${meeting.total_cost:.2f} - {meeting.current_round} rounds"
+                    else:
+                        details = "Ready to run"
+
+                    console.print(
+                        f"  {i}. {meeting.topic} "
+                        f"[{status_color}]({meeting.status.value})[/{status_color}] "
+                        f"[dim]- {details}[/dim]"
+                    )
+
+                # Get user choice
+                choice = Prompt.ask(
+                    "\n[bold]Select meeting[/bold]",
+                    choices=[str(i) for i in range(1, len(meetings) + 1)],
+                    default="1"
+                )
+                selected = meetings[int(choice) - 1]
+                uuid_id = selected.id
+                console.print(f"[dim]Selected:[/dim] {selected.topic}\n")
+        else:
+            # Meeting ID provided - parse it
+            try:
+                uuid_id = UUID(meeting_id)
+            except ValueError as e:
+                console.print(f"[red]Error: Invalid meeting ID format: {meeting_id}[/red]")
+                raise typer.Exit(1) from e
 
         # Get meeting status
         status_data = get_meeting_status(meeting_id=uuid_id)
@@ -415,26 +476,64 @@ def status(
 
         console.print(meeting_table)
 
-        # Display comments
-        if show_comments and status_data.recent_comments:
-            console.print("\n")
-            comments_table = Table(title="Recent Comments (Last 10)", show_lines=True)
-            comments_table.add_column("Round", style="bold")
-            comments_table.add_column("Agent", style="cyan")
-            comments_table.add_column("Category", style="yellow")
-            comments_table.add_column("Comment", style="white", no_wrap=False)
-            comments_table.add_column("Novelty", style="green")
+        # Generate and display meeting artifact (replaces truncated table)
+        if show_comments:
+            try:
+                from theboard.services.export_service import ExportService
+                import re
 
-            for comment in status_data.recent_comments[:10]:
-                comments_table.add_row(
-                    str(comment.round),
-                    comment.agent_name,
-                    comment.category.value,
-                    comment.text[:100] + "..." if len(comment.text) > 100 else comment.text,
-                    f"{comment.novelty_score:.2f}",
+                export_service = ExportService()
+
+                # Create artifacts directory
+                artifacts_dir = Path("artifacts/meetings")
+                artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+                # Generate safe filename
+                meeting_topic = status_data.meeting.topic
+                safe_topic = re.sub(r"[^a-zA-Z0-9]", "_", meeting_topic)[:50]
+                timestamp = status_data.meeting.created_at.strftime("%Y%m%d_%H%M%S") if status_data.meeting.created_at else "unknown"
+                filename = f"meeting_{timestamp}_{safe_topic}_{uuid_id}.md"
+                artifact_path = artifacts_dir / filename
+
+                # Export to markdown
+                export_service.export_markdown(uuid_id, artifact_path)
+
+                console.print("\n")
+                console.print(
+                    Panel.fit(
+                        f"[green]✓[/green] Meeting artifact generated\n\n"
+                        f"[bold]Path:[/bold] {artifact_path}\n"
+                        f"[bold]Comments:[/bold] {status_data.meeting.total_comments}\n"
+                        f"[bold]Rounds:[/bold] {status_data.meeting.current_round}",
+                        title="[bold cyan]Meeting Document[/bold cyan]",
+                        border_style="cyan",
+                    )
                 )
 
-            console.print(comments_table)
+                console.print(f"\n[dim]View full details:[/dim] [bold]cat {artifact_path}[/bold]")
+                console.print(f"[dim]Or open in editor:[/dim] [bold]$EDITOR {artifact_path}[/bold]\n")
+
+            except Exception as e:
+                logger.warning("Failed to generate meeting artifact: %s", e)
+                # Fallback to truncated table if artifact generation fails
+                console.print("\n")
+                comments_table = Table(title="Recent Comments (Last 10)", show_lines=True)
+                comments_table.add_column("Round", style="bold")
+                comments_table.add_column("Agent", style="cyan")
+                comments_table.add_column("Category", style="yellow")
+                comments_table.add_column("Comment", style="white", no_wrap=False)
+                comments_table.add_column("Novelty", style="green")
+
+                for comment in status_data.recent_comments[:10]:
+                    comments_table.add_row(
+                        str(comment.round),
+                        comment.agent_name,
+                        comment.category.value,
+                        comment.text[:100] + "..." if len(comment.text) > 100 else comment.text,
+                        f"{comment.novelty_score:.2f}",
+                    )
+
+                console.print(comments_table)
 
         # Display metrics
         if show_metrics and status_data.convergence_metrics:
