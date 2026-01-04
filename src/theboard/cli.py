@@ -12,6 +12,7 @@ from rich.table import Table
 
 from theboard.cli_commands.agents import agents_app
 from theboard.cli_commands.config import config_app
+from theboard.cli_commands.wizard import wizard_app
 from theboard.config import settings
 from theboard.schemas import MeetingResponse, MeetingStatus, StrategyType
 
@@ -25,6 +26,7 @@ app = typer.Typer(
 # Register command groups
 app.add_typer(agents_app, name="agents")
 app.add_typer(config_app, name="config")
+app.add_typer(wizard_app, name="wizard")
 
 # Initialize Rich console
 console = Console()
@@ -77,6 +79,8 @@ def create(
 
     Creates a meeting with the specified topic and configuration.
     Agents can be auto-selected based on topic relevance or manually chosen.
+
+    TIP: New users should try 'board wizard create' for a guided experience!
     """
     try:
         # Import here to avoid circular dependencies

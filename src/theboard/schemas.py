@@ -43,6 +43,32 @@ class AgentType(str, Enum):
     LETTA = "letta"
 
 
+class MeetingType(str, Enum):
+    """Meeting type for wizard classification."""
+
+    BRAINSTORM = "brainstorm"
+    RISK_ASSESSMENT = "risk_assessment"
+    TECHNICAL_REVIEW = "technical_review"
+    DEBATE = "debate"
+    RESEARCH = "research"
+
+
+class LengthStrategy(str, Enum):
+    """Meeting length strategy combining rounds and convergence."""
+
+    QUICK = "quick"  # 2 rounds, ~5 min, cost-optimized
+    STANDARD = "standard"  # 3-4 rounds, ~10 min, balanced
+    THOROUGH = "thorough"  # 5+ rounds, ~15 min, quality-focused
+
+
+class AgentPoolSize(str, Enum):
+    """Agent pool preset sizes."""
+
+    SMALL = "small"  # 3 agents
+    MEDIUM = "medium"  # 5 agents
+    LARGE = "large"  # 8 agents
+
+
 # Request schemas
 
 
@@ -202,3 +228,53 @@ class AgentConfig(BaseModel):
     background: str | None = None
     agent_type: AgentType = AgentType.PLAINTEXT
     default_model: str = "deepseek"
+
+
+# Wizard schemas
+
+
+class WizardConfig(BaseModel):
+    """Schema for wizard-generated meeting configuration."""
+
+    topic: str = Field(..., min_length=10, max_length=500)
+    meeting_type: MeetingType = MeetingType.BRAINSTORM
+    length_strategy: LengthStrategy = LengthStrategy.STANDARD
+    agent_pool_size: AgentPoolSize = AgentPoolSize.MEDIUM
+
+    def to_meeting_create_params(self) -> dict:
+        """Convert wizard config to create_meeting parameters."""
+        length_mapping = {
+            LengthStrategy.QUICK: {"max_rounds": 2, "agent_count": 3},
+            LengthStrategy.STANDARD: {"max_rounds": 4, "agent_count": 5},
+            LengthStrategy.THOROUGH: {"max_rounds": 5, "agent_count": 8},
+        }
+
+        pool_mapping = {
+            AgentPoolSize.SMALL: 3,
+            AgentPoolSize.MEDIUM: 5,
+            AgentPoolSize.LARGE: 8,
+        }
+
+        length_params = length_mapping[self.length_strategy]
+
+        return {
+            "topic": self.topic,
+            "strategy": StrategyType.SEQUENTIAL,
+            "max_rounds": length_params["max_rounds"],
+            "agent_count": pool_mapping[self.agent_pool_size],
+            "auto_select": True,
+            "model_override": None,
+        }
+
+
+class CostEstimate(BaseModel):
+    """Schema for meeting cost estimation."""
+
+    min_cost: float
+    max_cost: float
+    expected_cost: float
+    min_duration_minutes: int
+    max_duration_minutes: int
+    expected_duration_minutes: int
+    expected_comment_count: int
+    breakdown: dict[str, str | int | float]
