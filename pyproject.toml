@@ -38,6 +38,8 @@ dependencies = [
   "tenacity>=8.5.0",
   "asyncio>=3.4.3",
   "openai>=2.14.0",
+  "orjson>=3.11.5",
+  "aio-pika>=9.5.8",
 ]
 
 [project.optional-dependencies]

@@ -357,16 +357,17 @@ class TestEventEmitterFactory:
         assert isinstance(emitter, NullEventEmitter)
 
     @patch("theboard.events.emitter.get_settings")
-    def test_factory_returns_null_for_rabbitmq_stub(self, mock_get_settings):
-        """Test that factory returns NullEventEmitter for RabbitMQ (Sprint 2.5 stub)."""
+    def test_factory_returns_null_for_rabbitmq_when_unavailable(self, mock_get_settings):
+        """Test that factory returns NullEventEmitter for RabbitMQ when bloodbank unavailable."""
         mock_config = MagicMock(spec=Settings)
         mock_config.testing = False
         mock_config.event_emitter = "rabbitmq"
+        mock_config.rabbitmq_url = "amqp://localhost"
         mock_get_settings.return_value = mock_config
 
         emitter = get_event_emitter()
 
-        # Sprint 2.5: RabbitMQ is a stub, falls back to null emitter
+        # Bloodbank is likely unavailable in test environment, falls back to null emitter
         assert isinstance(emitter, NullEventEmitter)
 
     @patch("theboard.events.emitter.get_settings")
