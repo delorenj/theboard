@@ -91,39 +91,20 @@ class InMemoryEventEmitter:
         return [e for e in self.events if e.event_type == event_type]
 
 
-class RabbitMQEventEmitter:
-    """RabbitMQ event emitter (stub for Sprint 2.5).
+# RabbitMQEventEmitter moved to bloodbank_emitter.py
+# Import here for backward compatibility
+try:
+    from theboard.events.bloodbank_emitter import RabbitMQEventEmitter
+except ImportError:
+    # Bloodbank not available, provide stub
+    class RabbitMQEventEmitter:
+        """RabbitMQ emitter stub (Bloodbank not available)."""
 
-    This is an intentional stub implementation that cannot be used in production.
-    Full implementation requires:
-    - aiormq connection management
-    - Exchange/queue declaration
-    - Retry logic with exponential backoff
-    - Dead letter queue configuration
-    - Connection pooling
-
-    Sprint 2.5 scope: Interface definition only.
-    Sprint 3 scope: Full implementation with connection management.
-
-    Note: This stub class should not be instantiated. The factory pattern
-    automatically falls back to NullEventEmitter when RabbitMQ is selected
-    but not yet implemented.
-    """
-
-    def __init__(self, connection_url: str, exchange: str = "theboard.events") -> None:
-        """Initialize RabbitMQ emitter (stub).
-
-        Args:
-            connection_url: AMQP connection URL
-            exchange: Exchange name for event routing
-
-        Raises:
-            NotImplementedError: This stub should not be instantiated
-        """
-        raise NotImplementedError(
-            "RabbitMQEventEmitter: Stub implementation - use NullEventEmitter instead. "
-            "Full RabbitMQ implementation deferred to Sprint 3"
-        )
+        def __init__(self, connection_url: str, exchange: str = "theboard.events") -> None:
+            raise NotImplementedError(
+                "RabbitMQEventEmitter requires Bloodbank. "
+                "Ensure bloodbank repository is cloned and accessible."
+            )
 
 
 # Global emitter instance (lazy initialization)
@@ -158,11 +139,17 @@ def get_event_emitter() -> EventEmitter:
     emitter_type = config.event_emitter
 
     if emitter_type == "rabbitmq":
-        logger.warning("Event emitter: RabbitMQEventEmitter (stub - Sprint 2.5)")
-        logger.warning("Full RabbitMQ implementation deferred to Sprint 3")
-        # For Sprint 2.5: Fall back to null emitter
-        # Sprint 3: Implement full RabbitMQ connection
-        _emitter = NullEventEmitter()
+        try:
+            # Use Bloodbank RabbitMQ emitter
+            _emitter = RabbitMQEventEmitter(
+                connection_url=config.rabbitmq_url,
+                exchange="events"  # Bloodbank uses 'events' exchange
+            )
+            logger.info("Event emitter: RabbitMQEventEmitter (Bloodbank integration)")
+        except (NotImplementedError, RuntimeError) as e:
+            logger.warning(f"RabbitMQEventEmitter unavailable: {e}")
+            logger.warning("Falling back to NullEventEmitter")
+            _emitter = NullEventEmitter()
     else:
         logger.info("Event emitter: NullEventEmitter (events disabled)")
         _emitter = NullEventEmitter()
