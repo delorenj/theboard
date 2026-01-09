@@ -17,7 +17,11 @@ from pathlib import Path
 from typing import Any
 
 from theboard.config import get_settings
-from theboard.events.schemas import BaseEvent
+from theboard.events.schemas import (
+    BaseEvent,
+    ServiceHealthPayload,
+    ServiceRegisteredPayload,
+)
 
 # Lazy import bloodbank components
 _bloodbank_available = False
@@ -33,7 +37,7 @@ try:
     if bloodbank_path.exists() and str(bloodbank_path) not in sys.path:
         sys.path.insert(0, str(bloodbank_path))
 
-    from rabbit import Publisher as _Publisher_class
+    from event_producers.rabbit import Publisher as _Publisher_class
     from event_producers.events.envelope import create_envelope as _create_envelope_func
     from event_producers.events.base import TriggerType as _TriggerType_enum, Source as _Source_class
 
@@ -83,7 +87,7 @@ def _create_bloodbank_envelope(event: BaseEvent) -> dict[str, Any]:
     # Create source metadata
     source = _Source(
         host=socket.gethostname(),
-        type=_TriggerType.SYSTEM,  # theboard is system-triggered
+        type=_TriggerType.MANUAL,  # Service lifecycle events
         app="theboard",
         meta={"version": "1.0.0"}
     )
@@ -247,3 +251,109 @@ class RabbitMQEventEmitter:
         if self._loop and not self._loop.is_running():
             self._loop.close()
             self._loop = None
+
+    async def emit_service_registered(
+        self,
+        service_id: str,
+        service_name: str,
+        version: str,
+        capabilities: list[str],
+        endpoints: dict[str, str],
+    ) -> None:
+        """Emit service.registered lifecycle event to Bloodbank.
+
+        Args:
+            service_id: Unique service identifier
+            service_name: Human-readable name
+            version: Service version
+            capabilities: List of service capabilities
+            endpoints: Exposed endpoints
+        """
+        if not self._started:
+            await self._start_async()
+
+        payload = ServiceRegisteredPayload(
+            service_id=service_id,
+            service_name=service_name,
+            version=version,
+            capabilities=capabilities,
+            endpoints=endpoints,
+        )
+
+        # Create Bloodbank envelope
+        source = _Source(
+            host=socket.gethostname(),
+            type=_TriggerType.MANUAL,
+            app="theboard",
+            meta={"version": version}
+        )
+
+        envelope = _create_envelope(
+            event_type="theboard.service.registered",
+            payload=payload.model_dump(),
+            source=source
+        )
+
+        # Publish to Bloodbank
+        await self._publisher.publish(
+            routing_key="theboard.service.registered",
+            body=envelope.model_dump()
+        )
+
+        logger.info(f"RabbitMQEventEmitter: Published service.registered ({service_id})")
+
+    async def emit_service_health(
+        self,
+        service_id: str,
+        status: str,
+        database: str,
+        redis: str,
+        bloodbank: str,
+        uptime_seconds: int,
+        details: dict[str, str] | None = None,
+    ) -> None:
+        """Emit service.health lifecycle event to Bloodbank.
+
+        Args:
+            service_id: Service identifier
+            status: Health status
+            database: Database connectivity
+            redis: Redis connectivity
+            bloodbank: Bloodbank connectivity
+            uptime_seconds: Service uptime
+            details: Optional diagnostic details
+        """
+        if not self._started:
+            await self._start_async()
+
+        payload = ServiceHealthPayload(
+            service_id=service_id,
+            status=status,
+            database=database,
+            redis=redis,
+            bloodbank=bloodbank,
+            uptime_seconds=uptime_seconds,
+            details=details,
+        )
+
+        # Create Bloodbank envelope
+        source = _Source(
+            host=socket.gethostname(),
+            type=_TriggerType.MANUAL,
+            app="theboard",
+            meta={"uptime_seconds": uptime_seconds}
+        )
+
+        envelope = _create_envelope(
+            event_type="theboard.service.health",
+            payload=payload.model_dump(),
+            source=source
+        )
+
+        # Publish to Bloodbank
+        await self._publisher.publish(
+            routing_key="theboard.service.health",
+            body=envelope.model_dump()
+        )
+
+        logger.debug(f"RabbitMQEventEmitter: Published service.health ({service_id}, {status})")

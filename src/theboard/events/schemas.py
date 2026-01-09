@@ -126,3 +126,42 @@ class MeetingFailedEvent(BaseEvent):
     error_message: str
     round_num: int | None = None
     agent_name: str | None = None
+
+
+# ============================================================================
+# Service Lifecycle Events (Phase 1 - 33GOD Integration)
+# ============================================================================
+
+
+class ServiceRegisteredPayload(BaseModel):
+    """Payload for theboard.service.registered event.
+
+    Emitted when TheBoard service starts up and registers with Bloodbank.
+    """
+
+    service_id: str = Field(description="Service identifier")
+    service_name: str = Field(description="Human-readable service name")
+    version: str = Field(description="Service version")
+    capabilities: list[str] = Field(
+        description="List of capabilities this service provides"
+    )
+    endpoints: dict[str, str] = Field(
+        description="Exposed endpoints (e.g., {'health': 'http://host:port/health'})"
+    )
+
+
+class ServiceHealthPayload(BaseModel):
+    """Payload for theboard.service.health event.
+
+    Emitted periodically to report service health status.
+    """
+
+    service_id: str = Field(description="Service identifier")
+    status: Literal["healthy", "degraded", "unhealthy"] = Field(
+        description="Overall health status"
+    )
+    database: Literal["connected", "disconnected", "error"]
+    redis: Literal["connected", "disconnected", "error"]
+    bloodbank: Literal["connected", "disconnected", "disabled"]
+    uptime_seconds: int = Field(description="Service uptime in seconds")
+    details: dict[str, str] | None = None
