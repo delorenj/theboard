@@ -207,7 +207,8 @@ async def periodic_health_check():
             logger.error(f"Health check emission failed: {e}")
 
 
-# Uncomment to enable periodic health events
-# @app.on_event("startup")
-# async def start_health_checker():
-#     asyncio.create_task(periodic_health_check())
+# Enable periodic health events
+@app.on_event("startup")
+async def start_health_checker():
+    """Start background task to emit health events every 60 seconds."""
+    asyncio.create_task(periodic_health_check())
