@@ -16,7 +16,11 @@ import logging
 from typing import Protocol
 
 from theboard.config import get_settings
-from theboard.events.schemas import BaseEvent
+from theboard.events.schemas import (
+    BaseEvent,
+    ServiceHealthPayload,
+    ServiceRegisteredPayload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +42,48 @@ class EventEmitter(Protocol):
         """
         ...
 
+    async def emit_service_registered(
+        self,
+        service_id: str,
+        service_name: str,
+        version: str,
+        capabilities: list[str],
+        endpoints: dict[str, str],
+    ) -> None:
+        """Emit service.registered lifecycle event.
+
+        Args:
+            service_id: Unique service identifier
+            service_name: Human-readable name
+            version: Service version
+            capabilities: List of service capabilities
+            endpoints: Exposed endpoints
+        """
+        ...
+
+    async def emit_service_health(
+        self,
+        service_id: str,
+        status: str,
+        database: str,
+        redis: str,
+        bloodbank: str,
+        uptime_seconds: int,
+        details: dict[str, str] | None = None,
+    ) -> None:
+        """Emit service.health lifecycle event.
+
+        Args:
+            service_id: Service identifier
+            status: Health status
+            database: Database connectivity
+            redis: Redis connectivity
+            bloodbank: Bloodbank connectivity
+            uptime_seconds: Service uptime
+            details: Optional diagnostic details
+        """
+        ...
+
 
 class NullEventEmitter:
     """No-op event emitter for testing or disabled events.
@@ -53,6 +99,34 @@ class NullEventEmitter:
         """
         logger.debug("NullEventEmitter: %s - %s", event.event_type, event.model_dump())
 
+    async def emit_service_registered(
+        self,
+        service_id: str,
+        service_name: str,
+        version: str,
+        capabilities: list[str],
+        endpoints: dict[str, str],
+    ) -> None:
+        """Log service.registered event but do not transmit."""
+        logger.debug(
+            "NullEventEmitter: service.registered - %s v%s", service_name, version
+        )
+
+    async def emit_service_health(
+        self,
+        service_id: str,
+        status: str,
+        database: str,
+        redis: str,
+        bloodbank: str,
+        uptime_seconds: int,
+        details: dict[str, str] | None = None,
+    ) -> None:
+        """Log service.health event but do not transmit."""
+        logger.debug(
+            "NullEventEmitter: service.health - %s (status=%s)", service_id, status
+        )
+
 
 class InMemoryEventEmitter:
     """In-memory event emitter for testing.
@@ -63,6 +137,7 @@ class InMemoryEventEmitter:
     def __init__(self) -> None:
         """Initialize in-memory event store."""
         self.events: list[BaseEvent] = []
+        self.lifecycle_events: list[dict] = []
 
     def emit(self, event: BaseEvent) -> None:
         """Store event in memory.
@@ -73,9 +148,52 @@ class InMemoryEventEmitter:
         self.events.append(event)
         logger.debug("InMemoryEventEmitter: %s", event.event_type)
 
+    async def emit_service_registered(
+        self,
+        service_id: str,
+        service_name: str,
+        version: str,
+        capabilities: list[str],
+        endpoints: dict[str, str],
+    ) -> None:
+        """Store service.registered event in memory."""
+        self.lifecycle_events.append({
+            "type": "service.registered",
+            "service_id": service_id,
+            "service_name": service_name,
+            "version": version,
+            "capabilities": capabilities,
+            "endpoints": endpoints,
+        })
+        logger.debug("InMemoryEventEmitter: service.registered")
+
+    async def emit_service_health(
+        self,
+        service_id: str,
+        status: str,
+        database: str,
+        redis: str,
+        bloodbank: str,
+        uptime_seconds: int,
+        details: dict[str, str] | None = None,
+    ) -> None:
+        """Store service.health event in memory."""
+        self.lifecycle_events.append({
+            "type": "service.health",
+            "service_id": service_id,
+            "status": status,
+            "database": database,
+            "redis": redis,
+            "bloodbank": bloodbank,
+            "uptime_seconds": uptime_seconds,
+            "details": details,
+        })
+        logger.debug("InMemoryEventEmitter: service.health")
+
     def clear(self) -> None:
         """Clear all stored events (for test isolation)."""
         self.events.clear()
+        self.lifecycle_events.clear()
 
     def get_events(self, event_type: str | None = None) -> list[BaseEvent]:
         """Retrieve stored events, optionally filtered by type.
