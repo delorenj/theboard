@@ -43,6 +43,8 @@ dependencies = [
   "openai>=2.14.0",
   "orjson>=3.11.5",
   "aio-pika>=9.5.8",
+  # Event bus integration
+  "bloodbank @ file:///home/delorenj/code/33GOD/bloodbank/trunk-main",
 ]
 
 [project.optional-dependencies]

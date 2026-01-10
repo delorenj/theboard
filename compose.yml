@@ -2,8 +2,8 @@ services:
   # TheBoard Application
   theboard:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ../..  # Build from 33GOD root to access bloodbank
+      dockerfile: theboard/trunk-main/Dockerfile
     container_name: theboard-app
     depends_on:
       postgres:
@@ -13,25 +13,23 @@ services:
       rabbitmq:
         condition: service_healthy
       qdrant:
-        condition: service_healthy
+        condition: service_started
     environment:
       - DATABASE_URL=postgresql+psycopg://theboard:theboard_dev_pass@postgres:5432/theboard
       - REDIS_URL=redis://:theboard_redis_pass@redis:6379
       - RABBITMQ_URL=amqp://theboard:theboard_rabbit_pass@rabbitmq:5672
       - QDRANT_URL=http://qdrant:6333
+      - THEBOARD_EVENT_EMITTER=rabbitmq
       - QDRANT_API_KEY=${QDRANT_API_KEY:-}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
     ports:
       - "8000:8000" # Expose health endpoint and API
-    volumes:
-      - .:/app
-      - /app/.venv # Prevent host .venv conflicts
     working_dir: /app
     command: >
       sh -c "
-        uv run alembic upgrade head &&
-        uv run uvicorn theboard.api:app --host 0.0.0.0 --port 8000 --reload
+        . /app/.venv/bin/activate &&
+        uvicorn theboard.api:app --host 0.0.0.0 --port 8000 --reload
       "
     networks:
       - theboard-network
@@ -110,14 +108,14 @@ services:
     image: qdrant/qdrant:latest
     container_name: theboard-qdrant
     ports:
-      - "${QDRANT_PORT:-6333}:6333"
-      - "${QDRANT_GRPC_PORT:-6334}:6334"
+      - "${QDRANT_PORT:-6335}:6333"
+      - "${QDRANT_GRPC_PORT:-6336}:6334"
     volumes:
       - qdrant_data:/qdrant/storage
     networks:
       - theboard-network
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:6333/healthz"]
+      test: ["CMD-SHELL", "curl -f http://localhost:6333/healthz || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
