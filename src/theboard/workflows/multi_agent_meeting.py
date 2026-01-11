@@ -22,6 +22,7 @@ from theboard.events import (
     MeetingFailedEvent,
     MeetingStartedEvent,
     RoundCompletedEvent,
+    TopComment,
     get_event_emitter,
 )
 from theboard.models.meeting import Agent, Comment as DBComment, Meeting, Response
@@ -98,6 +99,52 @@ class MultiAgentMeetingWorkflow:
             self.compressor = CompressorAgent(model=compressor_model)
         else:
             self.compressor = None
+
+    def _extract_insights(self) -> tuple[list[TopComment], dict[str, int], dict[str, int]]:
+        """Extract insights from meeting for completed event.
+
+        Phase 3A: Extract top comments, category distribution, and agent participation.
+
+        Returns:
+            Tuple of (top_comments, category_distribution, agent_participation)
+        """
+        with get_sync_db() as db:
+            # Query all comments for this meeting
+            comments = db.scalars(
+                select(DBComment)
+                .where(DBComment.meeting_id == self.meeting_id)
+                .where(DBComment.is_merged == False)  # Only non-merged comments
+                .order_by(DBComment.novelty_score.desc())
+            ).all()
+
+            # Extract top 5 comments
+            top_comments = [
+                TopComment(
+                    text=c.text,
+                    category=c.category,
+                    novelty_score=c.novelty_score,
+                    agent_name=c.agent_name,
+                    round_num=c.round
+                )
+                for c in comments[:5]
+            ]
+
+            # Calculate category distribution
+            category_dist: dict[str, int] = {}
+            for comment in comments:
+                category_dist[comment.category] = category_dist.get(comment.category, 0) + 1
+
+            # Calculate agent participation from responses
+            responses = db.scalars(
+                select(Response)
+                .where(Response.meeting_id == self.meeting_id)
+            ).all()
+
+            agent_participation: dict[str, int] = {}
+            for response in responses:
+                agent_participation[response.agent_name] = agent_participation.get(response.agent_name, 0) + 1
+
+            return top_comments, category_dist, agent_participation
 
     async def execute(self) -> None:
         """Execute the multi-agent meeting workflow.
@@ -276,7 +323,10 @@ class MultiAgentMeetingWorkflow:
                     )
                     final_db.commit()
 
-                    # Emit meeting completed event (Sprint 2.5)
+                    # Extract insights for event payload (Phase 3A)
+                    top_comments, category_dist, agent_participation = self._extract_insights()
+
+                    # Emit meeting completed event (Sprint 2.5, enhanced in Phase 3A)
                     self.emitter.emit(
                         MeetingCompletedEvent(
                             meeting_id=self.meeting_id,
@@ -285,6 +335,9 @@ class MultiAgentMeetingWorkflow:
                             total_cost=final_meeting.total_cost,
                             convergence_detected=converged,
                             stopping_reason=final_meeting.stopping_reason,
+                            top_comments=top_comments,
+                            category_distribution=category_dist,
+                            agent_participation=agent_participation,
                         )
                     )
 

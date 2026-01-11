@@ -101,18 +101,45 @@ class MeetingConvergedEvent(BaseEvent):
     total_comments: int
 
 
+class TopComment(BaseModel):
+    """Top comment extracted from meeting for insights."""
+
+    text: str
+    category: str
+    novelty_score: float
+    agent_name: str
+    round_num: int
+
+
 class MeetingCompletedEvent(BaseEvent):
     """Emitted when meeting completes successfully.
 
-    Payload contains final meeting state and metrics.
+    Payload contains final meeting state, metrics, and extracted insights.
+    Phase 3A: Enhanced with insights for downstream consumption.
     """
 
     event_type: Literal["meeting.completed"] = "meeting.completed"
+
+    # Meeting metrics
     total_rounds: int
     total_comments: int
     total_cost: float
     convergence_detected: bool
     stopping_reason: str
+
+    # Insights (Phase 3A)
+    top_comments: list[TopComment] = Field(
+        default_factory=list,
+        description="Top 5 comments ranked by novelty score"
+    )
+    category_distribution: dict[str, int] = Field(
+        default_factory=dict,
+        description="Distribution of comments by category (question, concern, idea, etc.)"
+    )
+    agent_participation: dict[str, int] = Field(
+        default_factory=dict,
+        description="Number of responses per agent"
+    )
 
 
 class MeetingFailedEvent(BaseEvent):

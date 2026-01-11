@@ -9,6 +9,7 @@ from theboard.events.schemas import (
     MeetingFailedEvent,
     MeetingStartedEvent,
     RoundCompletedEvent,
+    TopComment,
 )
 
 __all__ = [
@@ -21,4 +22,5 @@ __all__ = [
     "MeetingConvergedEvent",
     "MeetingCompletedEvent",
     "MeetingFailedEvent",
+    "TopComment",
 ]
