@@ -18,7 +18,7 @@ from typing import Protocol
 
 import numpy as np
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, PointStruct, SearchRequest, VectorParams
+from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, PointStruct, QueryRequest, VectorParams
 from sentence_transformers import SentenceTransformer
 
 from theboard.config import get_settings
@@ -234,16 +234,16 @@ class EmbeddingService:
         else:
             query_vector = query_embedding
 
-        # Search Qdrant
-        results = self.qdrant_client.search(
+        # Search Qdrant using query_points API (qdrant-client >= 1.12)
+        results = self.qdrant_client.query_points(
             collection_name=self.collection_name,
-            query_vector=query_vector,
+            query=query_vector,
             limit=limit,
             score_threshold=score_threshold,
         )
 
-        # Extract (comment_id, score) tuples
-        similar_comments = [(hit.id, hit.score) for hit in results]
+        # Extract (comment_id, score) tuples from QueryResponse
+        similar_comments = [(hit.id, hit.score) for hit in results.points]
 
         logger.debug(
             "Found %d similar comments (threshold=%.2f, limit=%d)",
@@ -290,26 +290,26 @@ class EmbeddingService:
         if not valid_comment_ids:
             return {cid: [] for cid in comment_ids}
 
-        # Prepare batch search requests
-        search_requests = [
-            SearchRequest(
-                vector=vectors_map[cid],
+        # Prepare batch query requests (qdrant-client >= 1.12)
+        query_requests = [
+            QueryRequest(
+                query=vectors_map[cid],
                 limit=len(comment_ids),
                 score_threshold=threshold,
             )
             for cid in valid_comment_ids
         ]
 
-        # Perform batch search
-        batch_results = self.qdrant_client.search_batch(
+        # Perform batch query using query_batch_points API
+        batch_results = self.qdrant_client.query_batch_points(
             collection_name=self.collection_name,
-            requests=search_requests,
+            requests=query_requests,
         )
 
-        # Build similarity matrix from batch results
+        # Build similarity matrix from batch results (QueryResponse objects)
         similarity_matrix: dict[int, list[int]] = {cid: [] for cid in comment_ids}
         for i, original_id in enumerate(valid_comment_ids):
-            similar_ids = [hit.id for hit in batch_results[i] if hit.id != original_id]
+            similar_ids = [hit.id for hit in batch_results[i].points if hit.id != original_id]
             similarity_matrix[original_id] = similar_ids
 
         logger.info(
@@ -328,16 +328,17 @@ class EmbeddingService:
         Args:
             meeting_id: Meeting UUID
         """
-        # Delete by filter (meeting_id matches)
+        # Delete by filter (meeting_id matches) using qdrant-client >= 1.12 API
         self.qdrant_client.delete(
             collection_name=self.collection_name,
-            points_selector={
-                "filter": {
-                    "must": [
-                        {"key": "meeting_id", "match": {"value": meeting_id}},
-                    ]
-                }
-            },
+            points_selector=Filter(
+                must=[
+                    FieldCondition(
+                        key="meeting_id",
+                        match=MatchValue(value=meeting_id),
+                    )
+                ]
+            ),
         )
 
         logger.info("Deleted embeddings for meeting %s", meeting_id)
