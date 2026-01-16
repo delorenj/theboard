@@ -317,13 +317,14 @@ class TestSimilaritySearch:
 
     def test_find_similar_comments_with_numpy_array(self):
         """Test finding similar comments with numpy array input."""
-        # Mock client with search results
+        # Mock client with query_points results (qdrant-client >= 1.12 API)
         mock_client = MagicMock()
-        mock_results = [
+        mock_query_response = MagicMock()
+        mock_query_response.points = [
             ScoredPoint(id=10, score=0.95, version=1, vector=None, payload={}),
             ScoredPoint(id=15, score=0.87, version=1, vector=None, payload={}),
         ]
-        mock_client.search.return_value = mock_results
+        mock_client.query_points.return_value = mock_query_response
 
         # Initialize service
         service = EmbeddingService(
@@ -339,10 +340,10 @@ class TestSimilaritySearch:
             score_threshold=0.85,
         )
 
-        # Verify search called with correct parameters
-        mock_client.search.assert_called_once_with(
+        # Verify query_points called with correct parameters
+        mock_client.query_points.assert_called_once_with(
             collection_name="comments",
-            query_vector=[0.1, 0.2, 0.3],
+            query=[0.1, 0.2, 0.3],
             limit=10,
             score_threshold=0.85,
         )
@@ -354,7 +355,9 @@ class TestSimilaritySearch:
         """Test finding similar comments with list input."""
         # Mock client
         mock_client = MagicMock()
-        mock_client.search.return_value = []
+        mock_query_response = MagicMock()
+        mock_query_response.points = []
+        mock_client.query_points.return_value = mock_query_response
 
         # Initialize service
         service = EmbeddingService(
@@ -366,9 +369,9 @@ class TestSimilaritySearch:
         query_vector = [0.1, 0.2, 0.3]
         service.find_similar_comments(query_embedding=query_vector)
 
-        # Verify search called with list (not converted)
-        call_args = mock_client.search.call_args
-        assert call_args.kwargs["query_vector"] == [0.1, 0.2, 0.3]
+        # Verify query_points called with list (not converted)
+        call_args = mock_client.query_points.call_args
+        assert call_args.kwargs["query"] == [0.1, 0.2, 0.3]
 
 
 class TestSimilarityMatrix:
@@ -394,27 +397,26 @@ class TestSimilarityMatrix:
 
         mock_client.retrieve.return_value = [mock_point1, mock_point2, mock_point3]
 
-        # Mock batch search results
-        batch_results = [
-            # Results for comment 1
-            [
-                ScoredPoint(id=1, score=1.0, version=1, vector=None, payload={}),
-                ScoredPoint(id=2, score=0.88, version=1, vector=None, payload={}),
-            ],
-            # Results for comment 2
-            [
-                ScoredPoint(id=2, score=1.0, version=1, vector=None, payload={}),
-                ScoredPoint(id=1, score=0.88, version=1, vector=None, payload={}),
-                ScoredPoint(id=3, score=0.86, version=1, vector=None, payload={}),
-            ],
-            # Results for comment 3
-            [
-                ScoredPoint(id=3, score=1.0, version=1, vector=None, payload={}),
-                ScoredPoint(id=2, score=0.86, version=1, vector=None, payload={}),
-            ],
+        # Mock batch query results (qdrant-client >= 1.12 API)
+        # Each result is a QueryResponse with a .points attribute
+        mock_response1 = MagicMock()
+        mock_response1.points = [
+            ScoredPoint(id=1, score=1.0, version=1, vector=None, payload={}),
+            ScoredPoint(id=2, score=0.88, version=1, vector=None, payload={}),
+        ]
+        mock_response2 = MagicMock()
+        mock_response2.points = [
+            ScoredPoint(id=2, score=1.0, version=1, vector=None, payload={}),
+            ScoredPoint(id=1, score=0.88, version=1, vector=None, payload={}),
+            ScoredPoint(id=3, score=0.86, version=1, vector=None, payload={}),
+        ]
+        mock_response3 = MagicMock()
+        mock_response3.points = [
+            ScoredPoint(id=3, score=1.0, version=1, vector=None, payload={}),
+            ScoredPoint(id=2, score=0.86, version=1, vector=None, payload={}),
         ]
 
-        mock_client.search_batch.return_value = batch_results
+        mock_client.query_batch_points.return_value = [mock_response1, mock_response2, mock_response3]
 
         # Initialize service
         service = EmbeddingService(
@@ -434,7 +436,7 @@ class TestSimilarityMatrix:
             ids=[1, 2, 3],
             with_vectors=True,
         )
-        mock_client.search_batch.assert_called_once()
+        mock_client.query_batch_points.assert_called_once()
 
         # Verify similarity matrix structure
         assert 1 in similarity_matrix
@@ -470,15 +472,13 @@ class TestSimilarityMatrix:
 
         mock_client.retrieve.return_value = [mock_point1, mock_point3]  # Comment 2 missing
 
-        # Mock batch search results (only for found comments)
-        batch_results = [
-            # Results for comment 1
-            [ScoredPoint(id=1, score=1.0, version=1, vector=None, payload={})],
-            # Results for comment 3
-            [ScoredPoint(id=3, score=1.0, version=1, vector=None, payload={})],
-        ]
+        # Mock batch query results (only for found comments)
+        mock_response1 = MagicMock()
+        mock_response1.points = [ScoredPoint(id=1, score=1.0, version=1, vector=None, payload={})]
+        mock_response3 = MagicMock()
+        mock_response3.points = [ScoredPoint(id=3, score=1.0, version=1, vector=None, payload={})]
 
-        mock_client.search_batch.return_value = batch_results
+        mock_client.query_batch_points.return_value = [mock_response1, mock_response3]
 
         # Initialize service
         service = EmbeddingService(
@@ -506,6 +506,8 @@ class TestCleanupOperations:
 
     def test_delete_meeting_embeddings(self):
         """Test deleting all embeddings for a meeting."""
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
+
         # Mock client
         mock_client = MagicMock()
 
@@ -519,17 +521,21 @@ class TestCleanupOperations:
         meeting_id = str(uuid4())
         service.delete_meeting_embeddings(meeting_id)
 
-        # Verify delete called with correct filter
-        mock_client.delete.assert_called_once_with(
-            collection_name="comments",
-            points_selector={
-                "filter": {
-                    "must": [
-                        {"key": "meeting_id", "match": {"value": meeting_id}},
-                    ]
-                }
-            },
-        )
+        # Verify delete called with correct filter (qdrant-client >= 1.12 API)
+        mock_client.delete.assert_called_once()
+        call_args = mock_client.delete.call_args
+
+        assert call_args.kwargs["collection_name"] == "comments"
+
+        # Verify filter structure
+        filter_obj = call_args.kwargs["points_selector"]
+        assert isinstance(filter_obj, Filter)
+        assert len(filter_obj.must) == 1
+
+        field_condition = filter_obj.must[0]
+        assert isinstance(field_condition, FieldCondition)
+        assert field_condition.key == "meeting_id"
+        assert field_condition.match.value == meeting_id
 
 
 class TestFactoryPattern:
