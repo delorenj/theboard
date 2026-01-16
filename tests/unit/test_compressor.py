@@ -13,8 +13,6 @@ Tests cover:
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
-from agno.agent import Agent as AgnoAgent
-
 from theboard.agents.compressor import CompressionMetrics, CompressorAgent
 from theboard.models.meeting import Comment
 
@@ -78,16 +76,12 @@ class TestCompressorInitialization:
     """Test CompressorAgent initialization."""
 
     @patch("theboard.agents.compressor.get_embedding_service")
-    @patch("theboard.agents.compressor.get_settings")
-    def test_initialization_with_defaults(self, mock_settings, mock_embedding):
+    def test_initialization_with_defaults(self, mock_embedding):
         """Test compressor initializes with default settings."""
-        mock_config = MagicMock()
-        mock_config.default_model = "claude-sonnet-4-5"
-        mock_settings.return_value = mock_config
-
         compressor = CompressorAgent()
 
-        assert compressor.model == "claude-sonnet-4-5"
+        # Default model is Claude Haiku (fast, cost-effective for compression)
+        assert compressor.model == "anthropic/claude-3-haiku-20240307"
         assert compressor.similarity_threshold == 0.85
         assert compressor.outlier_threshold == 2
         mock_embedding.assert_called_once()
@@ -181,7 +175,7 @@ class TestTier2SemanticMerge:
     ):
         """Test LLM merges cluster into single comment."""
         # Mock Agno agent
-        mock_agent = MagicMock(spec=AgnoAgent)
+        mock_agent = MagicMock()
         mock_agent.run.return_value = "Merged comment summarizing key points"
         mock_create_agent.return_value = mock_agent
 
@@ -261,7 +255,7 @@ class TestTier2SemanticMerge:
         self, mock_create_agent, mock_embedding
     ):
         """Test semantic merge marks original comments as merged."""
-        mock_agent = MagicMock(spec=AgnoAgent)
+        mock_agent = MagicMock()
         mock_agent.run.return_value = "Merged result"
         mock_create_agent.return_value = mock_agent
 
@@ -383,7 +377,7 @@ class TestEndToEndCompression:
         mock_embedding.return_value = mock_embedding_svc
 
         # Mock Agno agent for merging
-        mock_agent = MagicMock(spec=AgnoAgent)
+        mock_agent = MagicMock()
         mock_agent.run.return_value = "Merged similar ideas A and B"
         mock_create_agent.return_value = mock_agent
 
@@ -426,7 +420,7 @@ class TestMetadataTracking:
         self, mock_extract, mock_create_agent, mock_embedding
     ):
         """Test metadata extraction from LLM merge operations."""
-        mock_agent = MagicMock(spec=AgnoAgent)
+        mock_agent = MagicMock()
         mock_agent.run.return_value = "Merged text"
         mock_create_agent.return_value = mock_agent
 

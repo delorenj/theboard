@@ -21,7 +21,6 @@ import networkx as nx
 from agno.agent import Agent as AgnoAgent
 
 from theboard.agents.base import create_agno_agent, extract_agno_metrics
-from theboard.config import get_settings
 from theboard.database import get_sync_db
 from theboard.models.meeting import Comment
 from theboard.services.embedding_service import get_embedding_service
@@ -101,8 +100,8 @@ class CompressorAgent:
             similarity_threshold: Cosine similarity threshold for clustering (default: 0.85)
             outlier_threshold: Minimum support count to keep comment (default: 2)
         """
-        config = get_settings()
-        self.model = model or config.default_model
+        # Default to Claude Haiku for compression (fast, cost-effective)
+        self.model = model or "anthropic/claude-3-haiku-20240307"
         self.similarity_threshold = similarity_threshold
         self.outlier_threshold = outlier_threshold
 
