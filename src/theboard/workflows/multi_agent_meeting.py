@@ -1,14 +1,23 @@
-"""Multi-agent meeting workflow for Sprint 2.
+"""Multi-agent meeting workflow for Sprint 2 & 4.
 
 This workflow orchestrates multi-agent, multi-round brainstorming meetings with:
-- Multiple agents per round (sequential turn-taking)
+- Multiple agents per round (sequential or greedy/parallel turn-taking)
 - Multi-round execution with context accumulation
 - Basic convergence detection via novelty scores
 - Session management following Sprint 1.5 patterns
+
+Sprint 4 Story 11: Greedy Execution Strategy
+- Parallel agent responses using asyncio.gather
+- Comment-response phase (each agent responds to others)
+- Token efficiency tracking (n² cost for greedy)
+- Performance benchmarks (greedy vs sequential)
 """
 
+import asyncio
 import logging
 import re
+import time
+from dataclasses import dataclass, field
 from uuid import UUID
 
 from sqlalchemy import select
@@ -27,7 +36,7 @@ from theboard.events import (
 )
 from theboard.models.meeting import Agent, Comment as DBComment, Meeting, Response
 from theboard.preferences import get_preferences_manager
-from theboard.schemas import MeetingStatus
+from theboard.schemas import MeetingStatus, StrategyType
 
 # Sprint 3: Import embedding service and compressor agent
 from theboard.agents.compressor import CompressorAgent
@@ -36,15 +45,51 @@ from theboard.services.embedding_service import get_embedding_service
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class RoundMetrics:
+    """Metrics for a single round execution (Sprint 4 Story 11).
+
+    Used for tracking token efficiency and performance benchmarks.
+    """
+
+    round_num: int
+    strategy: str
+    execution_time_seconds: float
+    agent_count: int
+    total_responses: int
+    total_comments: int
+    total_tokens: int
+    total_cost: float
+    avg_novelty: float
+    parallel_responses: int = 0  # For greedy: N parallel + N² comment-responses
+    comment_response_count: int = 0  # N² responses in comment-response phase
+
+
+@dataclass
+class ExecutionBenchmark:
+    """Performance benchmark comparing greedy vs sequential (Sprint 4 Story 11)."""
+
+    strategy: str
+    total_rounds: int
+    total_execution_time_seconds: float
+    total_tokens: int
+    total_cost: float
+    avg_tokens_per_round: float
+    avg_time_per_round_seconds: float
+    round_metrics: list[RoundMetrics] = field(default_factory=list)
+
+
 class MultiAgentMeetingWorkflow:
-    """Multi-agent, multi-round meeting workflow (Sprint 2).
+    """Multi-agent, multi-round meeting workflow (Sprint 2 & 4).
 
     Key Features:
     - Multiple agents per meeting (selected pool)
     - Sequential strategy (agents take turns each round)
+    - Greedy strategy (parallel execution with asyncio.gather) - Sprint 4 Story 11
     - Context accumulation across rounds
     - Basic convergence detection (novelty threshold)
     - Proper session management (Sprint 1.5 pattern)
+    - Token efficiency tracking and benchmarks
     """
 
     def __init__(
@@ -55,6 +100,7 @@ class MultiAgentMeetingWorkflow:
         min_rounds: int = 2,
         enable_compression: bool = True,
         compression_threshold: int = 10000,
+        strategy: StrategyType = StrategyType.SEQUENTIAL,
     ) -> None:
         """Initialize multi-agent workflow.
 
@@ -65,6 +111,7 @@ class MultiAgentMeetingWorkflow:
             min_rounds: Minimum rounds before convergence can be detected (default 2)
             enable_compression: Enable comment compression (default True, Sprint 3)
             compression_threshold: Context size threshold for lazy compression (default 10000 chars, Sprint 5)
+            strategy: Execution strategy - sequential or greedy (default sequential, Sprint 4 Story 11)
         """
         self.meeting_id = meeting_id
         self.model_override = model_override
@@ -73,6 +120,11 @@ class MultiAgentMeetingWorkflow:
         self.enable_compression = enable_compression
         self.compression_threshold = compression_threshold
         self.compression_trigger_count = 0  # Track how many times compression was triggered
+        self.strategy = strategy  # Sprint 4 Story 11: Execution strategy
+
+        # Sprint 4 Story 11: Token efficiency tracking
+        self.round_metrics: list[RoundMetrics] = []
+        self.execution_start_time: float | None = None
 
         # Sprint 5 Story 16: Delta propagation - track what each agent has seen
         self.agent_last_seen_round: dict[str, int] = {}  # agent_id -> last round they saw
@@ -99,6 +151,13 @@ class MultiAgentMeetingWorkflow:
             self.compressor = CompressorAgent(model=compressor_model)
         else:
             self.compressor = None
+
+        logger.info(
+            "MultiAgentMeetingWorkflow initialized: strategy=%s, novelty_threshold=%.2f, min_rounds=%d",
+            self.strategy.value,
+            self.novelty_threshold,
+            self.min_rounds,
+        )
 
     def _extract_insights(self) -> tuple[list[TopComment], dict[str, int], dict[str, int]]:
         """Extract insights from meeting for completed event.
@@ -213,11 +272,39 @@ class MultiAgentMeetingWorkflow:
         # Execute rounds (session closed during round execution)
         try:
             converged = False
-            for round_num in range(1, meeting.max_rounds + 1):
-                logger.info("Starting round %d of %d", round_num, meeting.max_rounds)
+            self.execution_start_time = time.time()
 
-                # Execute round with all agents sequentially
-                avg_novelty = await self._execute_round(agents, round_num)
+            for round_num in range(1, meeting.max_rounds + 1):
+                logger.info(
+                    "Starting round %d of %d (strategy=%s)",
+                    round_num,
+                    meeting.max_rounds,
+                    self.strategy.value,
+                )
+
+                # Sprint 4 Story 11: Execute round based on strategy
+                round_start_time = time.time()
+
+                if self.strategy == StrategyType.GREEDY:
+                    # Greedy: parallel execution with asyncio.gather
+                    avg_novelty, round_metrics = await self._execute_round_greedy(agents, round_num)
+                else:
+                    # Sequential: agents take turns one by one
+                    avg_novelty = await self._execute_round(agents, round_num)
+                    # Create metrics for sequential execution
+                    round_metrics = RoundMetrics(
+                        round_num=round_num,
+                        strategy=self.strategy.value,
+                        execution_time_seconds=time.time() - round_start_time,
+                        agent_count=len(agents),
+                        total_responses=len(agents),
+                        total_comments=0,  # Will be calculated below
+                        total_tokens=0,
+                        total_cost=0.0,
+                        avg_novelty=avg_novelty,
+                    )
+
+                self.round_metrics.append(round_metrics)
 
                 # Sprint 5 Story 16: Lazy compression - only compress when context > threshold
                 if self.enable_compression and self.compressor:
@@ -817,3 +904,325 @@ class MultiAgentMeetingWorkflow:
         )
 
         return avg_novelty
+
+    async def _execute_round_greedy(
+        self, agents: list[Agent], round_num: int
+    ) -> tuple[float, RoundMetrics]:
+        """Execute a single round with all agents in parallel using greedy strategy.
+
+        Sprint 4 Story 11: Greedy Execution Strategy
+
+        Greedy strategy phases:
+        1. Parallel Response Phase: All agents respond simultaneously to context
+           - Uses asyncio.gather for parallel LLM calls
+           - Significantly faster than sequential (N parallel vs N sequential)
+        2. Comment-Response Phase: Each agent responds to other agents' comments
+           - Creates N² interactions (each agent responds to each other agent's comments)
+           - Higher token cost but richer discussion
+
+        Session Management (Sprint 1.5 pattern):
+        - Build context (read-only session for previous responses)
+        - Execute all LLM calls WITHOUT holding session (parallel)
+        - Store results in new session
+
+        Args:
+            agents: List of Agent instances for this round
+            round_num: Current round number
+
+        Returns:
+            Tuple of (average_novelty_score, round_metrics)
+
+        Raises:
+            RuntimeError: If round execution fails
+        """
+        round_start_time = time.time()
+        logger.info(
+            "Executing GREEDY round %d with %d agents (parallel)",
+            round_num,
+            len(agents),
+        )
+
+        # Build shared context for all agents (before parallel execution)
+        shared_context = await self._build_context(round_num, agent_id=None)
+
+        # Phase 1: Parallel Response Phase
+        # All agents respond to the same context simultaneously
+        parallel_start_time = time.time()
+
+        async def execute_agent_parallel(agent: Agent) -> tuple[Agent, float, dict]:
+            """Execute a single agent's turn and return results."""
+            try:
+                novelty = await self._execute_agent_turn(agent, shared_context, round_num)
+                # Get metrics from database
+                with get_sync_db() as db:
+                    response_stmt = (
+                        select(Response)
+                        .where(Response.meeting_id == self.meeting_id)
+                        .where(Response.round == round_num)
+                        .where(Response.agent_name == agent.name)
+                    )
+                    response = db.scalars(response_stmt).first()
+                    metrics = {
+                        "tokens_used": response.tokens_used if response else 0,
+                        "cost": response.cost if response else 0.0,
+                    }
+                return (agent, novelty, metrics)
+            except Exception as e:
+                logger.error("Agent %s failed in greedy round %d: %s", agent.name, round_num, e)
+                return (agent, 0.0, {"tokens_used": 0, "cost": 0.0})
+
+        # Execute all agents in parallel using asyncio.gather
+        parallel_results = await asyncio.gather(
+            *[execute_agent_parallel(agent) for agent in agents],
+            return_exceptions=True,
+        )
+
+        parallel_execution_time = time.time() - parallel_start_time
+
+        # Process results from parallel phase
+        phase1_novelty_scores = []
+        phase1_total_tokens = 0
+        phase1_total_cost = 0.0
+        successful_agents = []
+
+        for result in parallel_results:
+            if isinstance(result, Exception):
+                logger.error("Agent execution raised exception: %s", result)
+                continue
+
+            agent, novelty, metrics = result
+            phase1_novelty_scores.append(novelty)
+            phase1_total_tokens += metrics["tokens_used"]
+            phase1_total_cost += metrics["cost"]
+            successful_agents.append(agent)
+
+            # Update agent's last seen round for delta propagation
+            self.agent_last_seen_round[str(agent.id)] = round_num
+
+        logger.info(
+            "Greedy round %d parallel phase completed: %d/%d agents, %.1fs, %d tokens, $%.4f",
+            round_num,
+            len(successful_agents),
+            len(agents),
+            parallel_execution_time,
+            phase1_total_tokens,
+            phase1_total_cost,
+        )
+
+        # Phase 2: Comment-Response Phase (N² interactions)
+        # Each agent responds to other agents' comments from this round
+        comment_response_start_time = time.time()
+        phase2_novelty_scores = []
+        phase2_total_tokens = 0
+        phase2_total_cost = 0.0
+        comment_response_count = 0
+
+        # Get all comments from this round for the comment-response phase
+        with get_sync_db() as db:
+            comment_stmt = (
+                select(DBComment)
+                .where(DBComment.meeting_id == self.meeting_id)
+                .where(DBComment.round == round_num)
+                .order_by(DBComment.created_at)
+            )
+            round_comments = db.scalars(comment_stmt).all()
+
+        if round_comments and len(successful_agents) > 1:
+            # Build comment-response context for each agent pair
+            async def execute_comment_response(
+                responding_agent: Agent, target_agent_name: str, target_comments: list[DBComment]
+            ) -> tuple[str, float, dict]:
+                """Have responding_agent respond to target_agent's comments."""
+                # Build context with target agent's comments
+                comment_context = f"Topic: {shared_context.split(chr(10))[0]}\n\n"
+                comment_context += f"Comments from {target_agent_name} to respond to:\n"
+                for comment in target_comments:
+                    comment_context += f"- [{comment.category.upper()}] {comment.text}\n"
+                comment_context += "\nProvide your thoughts and responses to these comments."
+
+                try:
+                    novelty = await self._execute_agent_turn(
+                        responding_agent, comment_context, round_num
+                    )
+                    # Get metrics
+                    with get_sync_db() as db:
+                        response_stmt = (
+                            select(Response)
+                            .where(Response.meeting_id == self.meeting_id)
+                            .where(Response.round == round_num)
+                            .where(Response.agent_name == responding_agent.name)
+                            .order_by(Response.created_at.desc())
+                        )
+                        response = db.scalars(response_stmt).first()
+                        metrics = {
+                            "tokens_used": response.tokens_used if response else 0,
+                            "cost": response.cost if response else 0.0,
+                        }
+                    return (responding_agent.name, novelty, metrics)
+                except Exception as e:
+                    logger.error(
+                        "Comment-response failed: %s responding to %s: %s",
+                        responding_agent.name,
+                        target_agent_name,
+                        e,
+                    )
+                    return (responding_agent.name, 0.0, {"tokens_used": 0, "cost": 0.0})
+
+            # Create comment-response tasks (N² - N, excluding self-responses)
+            comment_response_tasks = []
+            agent_comments_map: dict[str, list[DBComment]] = {}
+            for comment in round_comments:
+                if comment.agent_name not in agent_comments_map:
+                    agent_comments_map[comment.agent_name] = []
+                agent_comments_map[comment.agent_name].append(comment)
+
+            for responding_agent in successful_agents:
+                for target_agent_name, target_comments in agent_comments_map.items():
+                    # Skip self-responses
+                    if responding_agent.name != target_agent_name:
+                        comment_response_tasks.append(
+                            execute_comment_response(
+                                responding_agent, target_agent_name, target_comments
+                            )
+                        )
+
+            if comment_response_tasks:
+                # Execute comment-responses in parallel
+                comment_results = await asyncio.gather(
+                    *comment_response_tasks, return_exceptions=True
+                )
+
+                for result in comment_results:
+                    if isinstance(result, Exception):
+                        logger.error("Comment-response raised exception: %s", result)
+                        continue
+
+                    responder_name, novelty, metrics = result
+                    phase2_novelty_scores.append(novelty)
+                    phase2_total_tokens += metrics["tokens_used"]
+                    phase2_total_cost += metrics["cost"]
+                    comment_response_count += 1
+
+            comment_response_time = time.time() - comment_response_start_time
+            logger.info(
+                "Greedy round %d comment-response phase completed: %d interactions, %.1fs, %d tokens, $%.4f",
+                round_num,
+                comment_response_count,
+                comment_response_time,
+                phase2_total_tokens,
+                phase2_total_cost,
+            )
+
+        # Calculate overall metrics
+        all_novelty_scores = phase1_novelty_scores + phase2_novelty_scores
+        avg_novelty = sum(all_novelty_scores) / len(all_novelty_scores) if all_novelty_scores else 1.0
+        total_execution_time = time.time() - round_start_time
+
+        # Get comment count for this round
+        with get_sync_db() as db:
+            comment_count_stmt = (
+                select(DBComment)
+                .where(DBComment.meeting_id == self.meeting_id)
+                .where(DBComment.round == round_num)
+            )
+            total_comments = len(db.scalars(comment_count_stmt).all())
+
+        round_metrics = RoundMetrics(
+            round_num=round_num,
+            strategy="greedy",
+            execution_time_seconds=total_execution_time,
+            agent_count=len(agents),
+            total_responses=len(successful_agents) + comment_response_count,
+            total_comments=total_comments,
+            total_tokens=phase1_total_tokens + phase2_total_tokens,
+            total_cost=phase1_total_cost + phase2_total_cost,
+            avg_novelty=avg_novelty,
+            parallel_responses=len(successful_agents),
+            comment_response_count=comment_response_count,
+        )
+
+        logger.info(
+            "Greedy round %d completed: %d agents, %d comment-responses, "
+            "%.1fs total, %d tokens, $%.4f, avg_novelty=%.3f",
+            round_num,
+            len(successful_agents),
+            comment_response_count,
+            total_execution_time,
+            round_metrics.total_tokens,
+            round_metrics.total_cost,
+            avg_novelty,
+        )
+
+        # Emit round completed events
+        with get_sync_db() as round_db:
+            response_stmt = (
+                select(Response)
+                .where(Response.meeting_id == self.meeting_id)
+                .where(Response.round == round_num)
+            )
+            round_responses = round_db.scalars(response_stmt).all()
+
+            comment_stmt = (
+                select(DBComment)
+                .where(DBComment.meeting_id == self.meeting_id)
+                .where(DBComment.round == round_num)
+            )
+            round_comments = round_db.scalars(comment_stmt).all()
+
+            for response in round_responses:
+                agent_comments = [c for c in round_comments if c.agent_name == response.agent_name]
+                agent_avg_novelty = (
+                    sum(c.novelty_score for c in agent_comments) / len(agent_comments)
+                    if agent_comments
+                    else 0.0
+                )
+
+                self.emitter.emit(
+                    RoundCompletedEvent(
+                        meeting_id=self.meeting_id,
+                        round_num=round_num,
+                        agent_name=response.agent_name,
+                        response_length=len(response.response_text),
+                        comment_count=len(agent_comments),
+                        avg_novelty=agent_avg_novelty,
+                        tokens_used=response.tokens_used,
+                        cost=response.cost,
+                    )
+                )
+
+        return avg_novelty, round_metrics
+
+    def get_execution_benchmark(self) -> ExecutionBenchmark:
+        """Get execution benchmark data for this workflow run.
+
+        Sprint 4 Story 11: Performance benchmark for greedy vs sequential comparison.
+
+        Returns:
+            ExecutionBenchmark with aggregated metrics across all rounds
+        """
+        if not self.round_metrics:
+            return ExecutionBenchmark(
+                strategy=self.strategy.value,
+                total_rounds=0,
+                total_execution_time_seconds=0.0,
+                total_tokens=0,
+                total_cost=0.0,
+                avg_tokens_per_round=0.0,
+                avg_time_per_round_seconds=0.0,
+            )
+
+        total_tokens = sum(m.total_tokens for m in self.round_metrics)
+        total_cost = sum(m.total_cost for m in self.round_metrics)
+        total_time = sum(m.execution_time_seconds for m in self.round_metrics)
+        num_rounds = len(self.round_metrics)
+
+        return ExecutionBenchmark(
+            strategy=self.strategy.value,
+            total_rounds=num_rounds,
+            total_execution_time_seconds=total_time,
+            total_tokens=total_tokens,
+            total_cost=total_cost,
+            avg_tokens_per_round=total_tokens / num_rounds if num_rounds > 0 else 0.0,
+            avg_time_per_round_seconds=total_time / num_rounds if num_rounds > 0 else 0.0,
+            round_metrics=self.round_metrics,
+        )

@@ -163,7 +163,17 @@ def run_meeting(meeting_id: UUID, interactive: bool, rerun: bool = False) -> Mee
     try:
         # Sprint 2: Use multi-agent workflow for all meetings
         # SimpleMeetingWorkflow kept available for single-agent testing if needed
-        workflow = MultiAgentMeetingWorkflow(meeting_id, model_override=model_override)
+        # Sprint 4 Story 11: Get strategy from meeting for greedy/sequential execution
+        with get_sync_db() as strategy_db:
+            stmt = select(Meeting).where(Meeting.id == meeting_id)
+            strategy_meeting = strategy_db.scalars(stmt).first()
+            meeting_strategy = StrategyType(strategy_meeting.strategy) if strategy_meeting else StrategyType.SEQUENTIAL
+
+        workflow = MultiAgentMeetingWorkflow(
+            meeting_id,
+            model_override=model_override,
+            strategy=meeting_strategy,
+        )
         asyncio.run(workflow.execute())
 
     except Exception as e:
