@@ -156,6 +156,94 @@ class MeetingFailedEvent(BaseEvent):
 
 
 # ============================================================================
+# Human-in-the-Loop Events (Sprint 4 Story 12)
+# ============================================================================
+
+
+class HumanInputNeededEvent(BaseEvent):
+    """Emitted when meeting requires human steering input.
+
+    Payload contains current meeting state and available actions.
+    Sprint 4 Story 12: Human-in-the-loop integration.
+    """
+
+    event_type: Literal["meeting.human.input.needed"] = "meeting.human.input.needed"
+    round_num: int
+    reason: str = Field(
+        description="Why human input is requested (round_complete, convergence_approaching, etc.)"
+    )
+    current_topic: str
+    total_comments: int
+    avg_novelty: float
+    available_actions: list[str] = Field(
+        default_factory=lambda: ["continue", "pause", "modify_context", "stop"],
+        description="Actions the human can take"
+    )
+    timeout_seconds: int = Field(
+        default=300,
+        description="Seconds before auto-continue (default 5 minutes)"
+    )
+
+
+class MeetingPausedEvent(BaseEvent):
+    """Emitted when meeting is paused for human intervention.
+
+    Payload contains pause context and resume instructions.
+    Sprint 4 Story 12: Human-in-the-loop integration.
+    """
+
+    event_type: Literal["meeting.paused"] = "meeting.paused"
+    round_num: int
+    paused_by: str = Field(
+        default="user",
+        description="Who initiated the pause (user, system, timeout)"
+    )
+    reason: str | None = Field(
+        default=None,
+        description="Optional reason for pause"
+    )
+
+
+class MeetingResumedEvent(BaseEvent):
+    """Emitted when a paused meeting is resumed.
+
+    Payload contains resume context and any steering modifications.
+    Sprint 4 Story 12: Human-in-the-loop integration.
+    """
+
+    event_type: Literal["meeting.resumed"] = "meeting.resumed"
+    round_num: int
+    resumed_by: str = Field(
+        default="user",
+        description="Who resumed the meeting (user, timeout)"
+    )
+    context_modified: bool = Field(
+        default=False,
+        description="Whether human added steering context"
+    )
+    steering_context: str | None = Field(
+        default=None,
+        description="Optional steering context added by human"
+    )
+
+
+class ContextModifiedEvent(BaseEvent):
+    """Emitted when human modifies meeting context during pause.
+
+    Sprint 4 Story 12: Human-in-the-loop integration.
+    """
+
+    event_type: Literal["meeting.context.modified"] = "meeting.context.modified"
+    round_num: int
+    modification_type: str = Field(
+        description="Type of modification (add_constraint, shift_focus, add_requirement)"
+    )
+    steering_text: str = Field(
+        description="The steering text added by the human"
+    )
+
+
+# ============================================================================
 # Service Lifecycle Events (Phase 1 - 33GOD Integration)
 # ============================================================================
 

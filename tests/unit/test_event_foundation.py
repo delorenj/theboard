@@ -17,10 +17,14 @@ import pytest
 from theboard.config import Settings
 from theboard.events import (
     CommentExtractedEvent,
+    ContextModifiedEvent,
+    HumanInputNeededEvent,
     MeetingCompletedEvent,
     MeetingConvergedEvent,
     MeetingCreatedEvent,
     MeetingFailedEvent,
+    MeetingPausedEvent,
+    MeetingResumedEvent,
     MeetingStartedEvent,
     RoundCompletedEvent,
     get_event_emitter,
@@ -173,6 +177,141 @@ class TestEventSchemas:
         assert event.comment_text == "We should prioritize user privacy"
         assert event.category == "suggestion"
         assert event.novelty_score == 0.85
+
+    # =========================================================================
+    # Sprint 4 Story 12: Human-in-the-Loop Event Schema Tests
+    # =========================================================================
+
+    def test_human_input_needed_event_validation(self):
+        """Test HumanInputNeededEvent schema validation."""
+        meeting_id = uuid4()
+        event = HumanInputNeededEvent(
+            meeting_id=meeting_id,
+            round_num=2,
+            reason="round_complete",
+            current_topic="AI safety discussion",
+            total_comments=15,
+            avg_novelty=0.45,
+        )
+
+        assert event.event_type == "meeting.human.input.needed"
+        assert event.meeting_id == meeting_id
+        assert event.round_num == 2
+        assert event.reason == "round_complete"
+        assert event.current_topic == "AI safety discussion"
+        assert event.total_comments == 15
+        assert event.avg_novelty == 0.45
+        # Check defaults
+        assert event.available_actions == ["continue", "pause", "modify_context", "stop"]
+        assert event.timeout_seconds == 300
+
+    def test_human_input_needed_event_custom_timeout(self):
+        """Test HumanInputNeededEvent with custom timeout."""
+        meeting_id = uuid4()
+        event = HumanInputNeededEvent(
+            meeting_id=meeting_id,
+            round_num=1,
+            reason="convergence_approaching",
+            current_topic="Test topic",
+            total_comments=10,
+            avg_novelty=0.35,
+            timeout_seconds=600,  # 10 minutes
+            available_actions=["continue", "stop"],
+        )
+
+        assert event.timeout_seconds == 600
+        assert event.available_actions == ["continue", "stop"]
+
+    def test_meeting_paused_event_validation(self):
+        """Test MeetingPausedEvent schema validation."""
+        meeting_id = uuid4()
+        event = MeetingPausedEvent(
+            meeting_id=meeting_id,
+            round_num=3,
+            paused_by="user",
+            reason="Need to review current direction",
+        )
+
+        assert event.event_type == "meeting.paused"
+        assert event.meeting_id == meeting_id
+        assert event.round_num == 3
+        assert event.paused_by == "user"
+        assert event.reason == "Need to review current direction"
+
+    def test_meeting_paused_event_defaults(self):
+        """Test MeetingPausedEvent default values."""
+        meeting_id = uuid4()
+        event = MeetingPausedEvent(
+            meeting_id=meeting_id,
+            round_num=2,
+        )
+
+        assert event.paused_by == "user"
+        assert event.reason is None
+
+    def test_meeting_resumed_event_validation(self):
+        """Test MeetingResumedEvent schema validation."""
+        meeting_id = uuid4()
+        event = MeetingResumedEvent(
+            meeting_id=meeting_id,
+            round_num=3,
+            resumed_by="user",
+            context_modified=True,
+            steering_context="Focus more on cost implications",
+        )
+
+        assert event.event_type == "meeting.resumed"
+        assert event.meeting_id == meeting_id
+        assert event.round_num == 3
+        assert event.resumed_by == "user"
+        assert event.context_modified is True
+        assert event.steering_context == "Focus more on cost implications"
+
+    def test_meeting_resumed_event_timeout_auto_continue(self):
+        """Test MeetingResumedEvent for timeout auto-continue scenario."""
+        meeting_id = uuid4()
+        event = MeetingResumedEvent(
+            meeting_id=meeting_id,
+            round_num=2,
+            resumed_by="timeout",
+            context_modified=False,
+        )
+
+        assert event.resumed_by == "timeout"
+        assert event.context_modified is False
+        assert event.steering_context is None
+
+    def test_context_modified_event_validation(self):
+        """Test ContextModifiedEvent schema validation."""
+        meeting_id = uuid4()
+        event = ContextModifiedEvent(
+            meeting_id=meeting_id,
+            round_num=2,
+            modification_type="add_constraint",
+            steering_text="Must consider regulatory compliance",
+        )
+
+        assert event.event_type == "meeting.context.modified"
+        assert event.meeting_id == meeting_id
+        assert event.round_num == 2
+        assert event.modification_type == "add_constraint"
+        assert event.steering_text == "Must consider regulatory compliance"
+
+    def test_human_input_event_immutability(self):
+        """Test that human-in-the-loop events are immutable."""
+        meeting_id = uuid4()
+        event = HumanInputNeededEvent(
+            meeting_id=meeting_id,
+            round_num=1,
+            reason="round_complete",
+            current_topic="Test",
+            total_comments=5,
+            avg_novelty=0.5,
+        )
+
+        # Attempt to modify frozen field should raise error
+        with pytest.raises(Exception):
+            event.round_num = 2
 
 
 class TestInMemoryEventEmitter:
@@ -524,3 +663,189 @@ class TestEventIntegrationPatterns:
         assert len(failed_events) == 1
         assert failed_events[0].error_type == "RuntimeError"
         assert failed_events[0].round_num == 2
+
+    # =========================================================================
+    # Sprint 4 Story 12: Human-in-the-Loop Event Integration Tests
+    # =========================================================================
+
+    def test_human_in_the_loop_event_sequence(self):
+        """Test typical human-in-the-loop event sequence in a meeting workflow."""
+        emitter = InMemoryEventEmitter()
+        meeting_id = uuid4()
+
+        # Meeting starts
+        emitter.emit(
+            MeetingCreatedEvent(
+                meeting_id=meeting_id,
+                topic="AI safety",
+                strategy="sequential",
+                max_rounds=5,
+                agent_count=2,
+            )
+        )
+
+        emitter.emit(
+            MeetingStartedEvent(
+                meeting_id=meeting_id,
+                selected_agents=["Alice", "Bob"],
+                agent_count=2,
+            )
+        )
+
+        # Round 1 completes
+        emitter.emit(
+            RoundCompletedEvent(
+                meeting_id=meeting_id,
+                round_num=1,
+                agent_name="Alice",
+                response_length=1000,
+                comment_count=3,
+                avg_novelty=0.8,
+                tokens_used=200,
+                cost=0.004,
+            )
+        )
+
+        # Human input needed after round 1
+        emitter.emit(
+            HumanInputNeededEvent(
+                meeting_id=meeting_id,
+                round_num=1,
+                reason="round_complete",
+                current_topic="AI safety",
+                total_comments=3,
+                avg_novelty=0.8,
+                timeout_seconds=300,
+            )
+        )
+
+        # Human pauses the meeting
+        emitter.emit(
+            MeetingPausedEvent(
+                meeting_id=meeting_id,
+                round_num=1,
+                paused_by="user",
+                reason="Need to add constraints",
+            )
+        )
+
+        # Human modifies context
+        emitter.emit(
+            ContextModifiedEvent(
+                meeting_id=meeting_id,
+                round_num=1,
+                modification_type="add_constraint",
+                steering_text="Focus on privacy implications",
+            )
+        )
+
+        # Human resumes with context modification
+        emitter.emit(
+            MeetingResumedEvent(
+                meeting_id=meeting_id,
+                round_num=1,
+                resumed_by="user",
+                context_modified=True,
+                steering_context="Focus on privacy implications",
+            )
+        )
+
+        # Verify event sequence
+        events = emitter.get_events()
+        assert len(events) == 7
+        assert events[0].event_type == "meeting.created"
+        assert events[1].event_type == "meeting.started"
+        assert events[2].event_type == "meeting.round_completed"
+        assert events[3].event_type == "meeting.human.input.needed"
+        assert events[4].event_type == "meeting.paused"
+        assert events[5].event_type == "meeting.context.modified"
+        assert events[6].event_type == "meeting.resumed"
+
+    def test_human_in_the_loop_filtering(self):
+        """Test filtering human-in-the-loop events."""
+        emitter = InMemoryEventEmitter()
+        meeting_id = uuid4()
+
+        # Emit various events
+        emitter.emit(
+            HumanInputNeededEvent(
+                meeting_id=meeting_id,
+                round_num=1,
+                reason="round_complete",
+                current_topic="Test",
+                total_comments=5,
+                avg_novelty=0.7,
+            )
+        )
+        emitter.emit(
+            MeetingPausedEvent(meeting_id=meeting_id, round_num=1)
+        )
+        emitter.emit(
+            MeetingResumedEvent(meeting_id=meeting_id, round_num=1)
+        )
+        emitter.emit(
+            HumanInputNeededEvent(
+                meeting_id=meeting_id,
+                round_num=2,
+                reason="convergence_approaching",
+                current_topic="Test",
+                total_comments=10,
+                avg_novelty=0.4,
+            )
+        )
+
+        # Filter by event type
+        input_needed = emitter.get_events("meeting.human.input.needed")
+        assert len(input_needed) == 2
+        assert input_needed[0].round_num == 1
+        assert input_needed[1].round_num == 2
+
+        paused = emitter.get_events("meeting.paused")
+        assert len(paused) == 1
+
+        resumed = emitter.get_events("meeting.resumed")
+        assert len(resumed) == 1
+
+    def test_timeout_auto_continue_event_sequence(self):
+        """Test event sequence when timeout triggers auto-continue."""
+        emitter = InMemoryEventEmitter()
+        meeting_id = uuid4()
+
+        # Human input needed
+        emitter.emit(
+            HumanInputNeededEvent(
+                meeting_id=meeting_id,
+                round_num=2,
+                reason="round_complete",
+                current_topic="Test",
+                total_comments=8,
+                avg_novelty=0.5,
+                timeout_seconds=300,
+            )
+        )
+
+        # Meeting paused (waiting for input)
+        emitter.emit(
+            MeetingPausedEvent(
+                meeting_id=meeting_id,
+                round_num=2,
+                paused_by="system",
+                reason="Waiting for human input",
+            )
+        )
+
+        # Timeout triggers auto-continue
+        emitter.emit(
+            MeetingResumedEvent(
+                meeting_id=meeting_id,
+                round_num=2,
+                resumed_by="timeout",
+                context_modified=False,
+            )
+        )
+
+        # Verify timeout-based resume
+        resumed_events = emitter.get_events("meeting.resumed")
+        assert len(resumed_events) == 1
+        assert resumed_events[0].resumed_by == "timeout"
+        assert resumed_events[0].context_modified is False
