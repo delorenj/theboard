@@ -169,10 +169,12 @@ def run_meeting(meeting_id: UUID, interactive: bool, rerun: bool = False) -> Mee
             strategy_meeting = strategy_db.scalars(stmt).first()
             meeting_strategy = StrategyType(strategy_meeting.strategy) if strategy_meeting else StrategyType.SEQUENTIAL
 
+        # Sprint 4 Story 12: Pass interactive flag to workflow
         workflow = MultiAgentMeetingWorkflow(
             meeting_id,
             model_override=model_override,
             strategy=meeting_strategy,
+            interactive=interactive,
         )
         asyncio.run(workflow.execute())
 
@@ -218,6 +220,170 @@ def run_meeting(meeting_id: UUID, interactive: bool, rerun: bool = False) -> Mee
             logger.error("Failed to auto-generate meeting log: %s", e)
 
         return MeetingResponse.model_validate(final_meeting)
+
+
+def resume_meeting(
+    meeting_id: UUID,
+    steering_context: str | None = None,
+    interactive: bool = True,
+) -> MeetingResponse:
+    """Resume a paused meeting.
+
+    Sprint 4 Story 12: Human-in-the-loop resume functionality.
+
+    Args:
+        meeting_id: Meeting UUID
+        steering_context: Optional human steering text to apply
+        interactive: Continue in interactive mode (default True)
+
+    Returns:
+        MeetingResponse with final meeting state
+
+    Raises:
+        ValueError: If meeting not found or not in paused state
+    """
+    import asyncio
+
+    from theboard.workflows.multi_agent_meeting import MultiAgentMeetingWorkflow
+    from theboard.utils.redis_manager import get_redis_manager
+
+    redis = get_redis_manager()
+
+    # Validate meeting is paused
+    with get_sync_db() as db:
+        try:
+            stmt = select(Meeting).where(Meeting.id == meeting_id)
+            meeting = db.scalars(stmt).first()
+
+            if not meeting:
+                raise ValueError(f"Meeting not found: {meeting_id}")
+
+            if meeting.status != MeetingStatus.PAUSED.value:
+                raise ValueError(f"Meeting is not paused: {meeting.status}")
+
+            model_override = meeting.model_override
+            meeting_strategy = StrategyType(meeting.strategy)
+
+        except Exception as e:
+            logger.exception("Failed to validate meeting for resume")
+            raise ValueError(f"Failed to resume meeting: {e!s}") from e
+
+    # Update steering context in Redis if provided
+    if steering_context:
+        redis.update_steering_context(str(meeting_id), steering_context)
+        logger.info("Added steering context for meeting %s", meeting_id)
+
+    # Create workflow and resume
+    try:
+        workflow = MultiAgentMeetingWorkflow(
+            meeting_id,
+            model_override=model_override,
+            strategy=meeting_strategy,
+            interactive=interactive,
+        )
+        asyncio.run(workflow.resume_from_pause())
+
+    except Exception as e:
+        with get_sync_db() as error_db:
+            stmt = select(Meeting).where(Meeting.id == meeting_id)
+            failed_meeting = error_db.scalars(stmt).first()
+            if failed_meeting:
+                failed_meeting.status = MeetingStatus.FAILED.value
+                error_db.commit()
+        logger.exception("Resume workflow execution failed")
+        raise ValueError(f"Failed to resume meeting: {e!s}") from e
+
+    # Get final meeting state
+    with get_sync_db() as result_db:
+        stmt = select(Meeting).where(Meeting.id == meeting_id)
+        final_meeting = result_db.scalars(stmt).first()
+
+        if not final_meeting:
+            raise ValueError(f"Meeting not found after resume: {meeting_id}")
+
+        return MeetingResponse.model_validate(final_meeting)
+
+
+def pause_meeting(meeting_id: UUID) -> MeetingResponse:
+    """Pause a running meeting.
+
+    Sprint 4 Story 12: Human-in-the-loop pause functionality.
+
+    Args:
+        meeting_id: Meeting UUID
+
+    Returns:
+        MeetingResponse with paused meeting state
+
+    Raises:
+        ValueError: If meeting not found or not running
+    """
+    from theboard.utils.redis_manager import get_redis_manager
+
+    redis = get_redis_manager()
+
+    with get_sync_db() as db:
+        try:
+            stmt = select(Meeting).where(Meeting.id == meeting_id)
+            meeting = db.scalars(stmt).first()
+
+            if not meeting:
+                raise ValueError(f"Meeting not found: {meeting_id}")
+
+            if meeting.status != MeetingStatus.RUNNING.value:
+                raise ValueError(f"Meeting is not running: {meeting.status}")
+
+            # Set pause action in Redis for workflow to pick up
+            action_key = f"meeting:{meeting_id}:human_action"
+            redis.client.setex(action_key, 300, "pause")  # 5 min TTL
+
+            logger.info("Pause requested for meeting %s", meeting_id)
+
+            return MeetingResponse.model_validate(meeting)
+
+        except Exception as e:
+            logger.exception("Failed to pause meeting")
+            raise ValueError(f"Failed to pause meeting: {e!s}") from e
+
+
+def add_steering_context(meeting_id: UUID, steering_text: str) -> bool:
+    """Add steering context to a paused or running meeting.
+
+    Sprint 4 Story 12: Human-in-the-loop steering functionality.
+
+    Args:
+        meeting_id: Meeting UUID
+        steering_text: Human steering text to add
+
+    Returns:
+        True if successful
+
+    Raises:
+        ValueError: If meeting not found
+    """
+    from theboard.utils.redis_manager import get_redis_manager
+
+    redis = get_redis_manager()
+
+    with get_sync_db() as db:
+        stmt = select(Meeting).where(Meeting.id == meeting_id)
+        meeting = db.scalars(stmt).first()
+
+        if not meeting:
+            raise ValueError(f"Meeting not found: {meeting_id}")
+
+        if meeting.status == MeetingStatus.PAUSED.value:
+            # Update pause state with steering
+            redis.update_steering_context(str(meeting_id), steering_text)
+        elif meeting.status == MeetingStatus.RUNNING.value:
+            # Set modify_context action for workflow
+            action_key = f"meeting:{meeting_id}:human_action"
+            redis.client.setex(action_key, 300, f"modify_context:{steering_text}")
+        else:
+            raise ValueError(f"Cannot add steering to meeting in status: {meeting.status}")
+
+        logger.info("Added steering context for meeting %s", meeting_id)
+        return True
 
 
 def fork_meeting(meeting_id: UUID) -> MeetingResponse:

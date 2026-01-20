@@ -16,7 +16,7 @@ current_sprint:
   start_date: "2026-01-19"
   end_date: null
   planned_points: 13
-  completed_points: 5
+  completed_points: 8
   velocity: 0
 
 sprints:
@@ -110,7 +110,8 @@ sprints:
       - id: "STORY-012"
         title: "Human-in-the-Loop Integration"
         points: 3
-        status: "pending"
+        status: "completed"
+        completed_date: "2026-01-19"
         phase: 4
       - id: "STORY-013"
         title: "Hybrid Model Strategy"
@@ -224,11 +225,11 @@ risks:
 metrics:
   planned_completion_date: null
   estimated_weeks: 13
-  stories_completed: 11
+  stories_completed: 12
   stories_in_progress: 0
-  stories_pending: 12
+  stories_pending: 11
   total_stories: 23
-  completion_percentage: 48
+  completion_percentage: 52
 
 notes:
   - "Sprint plan generated from tech-spec-theboard-2025-12-19.md"
@@ -241,3 +242,4 @@ notes:
   - "Sprint 7 (theboardroom) added 2026-01-07 - PlayCanvas visualization epic"
   - "Sprint 3 Intelligence completed 2026-01-15 (STORY-008, 009, 010 - 18 points)"
   - "Sprint 4 STORY-011 Greedy Strategy completed 2026-01-19 (5 points)"
+  - "Sprint 4 STORY-012 Human-in-the-Loop completed 2026-01-19 (3 points)"

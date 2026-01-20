@@ -25,6 +25,7 @@ class RedisManager:
     TTL_MEETING_STATE = 604800  # 7 days - long-lived state
     TTL_CONTEXT = 172800  # 2 days - shorter for working context
     TTL_METRICS = 604800  # 7 days - historical metrics
+    TTL_PAUSE_STATE = 86400  # 1 day - Sprint 4 Story 12: pause state (24 hours max)
 
     def __init__(self) -> None:
         """Initialize Redis connection."""
@@ -223,6 +224,152 @@ class RedisManager:
             return True
         except (ConnectionError, RedisError) as e:
             logger.error("Failed to delete meeting data: %s", e)
+            return False
+
+    # =========================================================================
+    # Sprint 4 Story 12: Human-in-the-Loop Pause State Management
+    # =========================================================================
+
+    def set_pause_state(
+        self,
+        meeting_id: str,
+        round_num: int,
+        steering_context: str | None = None,
+        timeout_seconds: int = 300,
+    ) -> bool:
+        """Set meeting pause state in Redis.
+
+        Sprint 4 Story 12: Store pause state for human-in-the-loop.
+
+        Args:
+            meeting_id: Meeting UUID
+            round_num: Current round when paused
+            steering_context: Optional human steering text
+            timeout_seconds: Auto-continue timeout (default 5 min)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            import time
+
+            key = f"meeting:{meeting_id}:pause"
+            state = {
+                "paused_at": time.time(),
+                "round_num": round_num,
+                "steering_context": steering_context,
+                "timeout_seconds": timeout_seconds,
+                "auto_continue_at": time.time() + timeout_seconds,
+            }
+            serialized = json.dumps(state)
+            self.client.setex(key, self.TTL_PAUSE_STATE, serialized)
+            logger.info("Set pause state for meeting %s at round %d", meeting_id, round_num)
+            return True
+        except (ConnectionError, RedisError) as e:
+            logger.error("Failed to set pause state: %s", e)
+            return False
+
+    def get_pause_state(self, meeting_id: str) -> dict[str, Any] | None:
+        """Get meeting pause state from Redis.
+
+        Sprint 4 Story 12: Retrieve pause state for resume.
+
+        Args:
+            meeting_id: Meeting UUID
+
+        Returns:
+            Pause state dictionary or None if not paused
+        """
+        try:
+            key = f"meeting:{meeting_id}:pause"
+            data = self.client.get(key)
+            if data is None:
+                return None
+            return json.loads(data)
+        except (ConnectionError, RedisError) as e:
+            logger.error("Failed to get pause state: %s", e)
+            return None
+
+    def clear_pause_state(self, meeting_id: str) -> bool:
+        """Clear meeting pause state from Redis.
+
+        Sprint 4 Story 12: Clear pause state on resume.
+
+        Args:
+            meeting_id: Meeting UUID
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            key = f"meeting:{meeting_id}:pause"
+            self.client.delete(key)
+            logger.info("Cleared pause state for meeting %s", meeting_id)
+            return True
+        except (ConnectionError, RedisError) as e:
+            logger.error("Failed to clear pause state: %s", e)
+            return False
+
+    def is_meeting_paused(self, meeting_id: str) -> bool:
+        """Check if meeting is currently paused.
+
+        Sprint 4 Story 12: Quick check for pause status.
+
+        Args:
+            meeting_id: Meeting UUID
+
+        Returns:
+            True if paused, False otherwise
+        """
+        return self.get_pause_state(meeting_id) is not None
+
+    def should_auto_continue(self, meeting_id: str) -> bool:
+        """Check if paused meeting should auto-continue due to timeout.
+
+        Sprint 4 Story 12: Check if timeout has elapsed.
+
+        Args:
+            meeting_id: Meeting UUID
+
+        Returns:
+            True if timeout elapsed and should auto-continue
+        """
+        import time
+
+        state = self.get_pause_state(meeting_id)
+        if state is None:
+            return False
+        auto_continue_at = state.get("auto_continue_at", 0)
+        return time.time() >= auto_continue_at
+
+    def update_steering_context(
+        self, meeting_id: str, steering_context: str
+    ) -> bool:
+        """Update steering context for a paused meeting.
+
+        Sprint 4 Story 12: Allow human to add steering before resume.
+
+        Args:
+            meeting_id: Meeting UUID
+            steering_context: Human steering text to add
+
+        Returns:
+            True if successful, False otherwise
+        """
+        state = self.get_pause_state(meeting_id)
+        if state is None:
+            logger.warning("Cannot update steering: meeting %s not paused", meeting_id)
+            return False
+
+        state["steering_context"] = steering_context
+        try:
+            key = f"meeting:{meeting_id}:pause"
+            serialized = json.dumps(state)
+            self.client.setex(key, self.TTL_PAUSE_STATE, serialized)
+            logger.info("Updated steering context for meeting %s", meeting_id)
+            return True
+        except (ConnectionError, RedisError) as e:
+            logger.error("Failed to update steering context: %s", e)
             return False
 
     def close(self) -> None:

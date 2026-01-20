@@ -26,9 +26,13 @@ from theboard.agents.domain_expert import DomainExpertAgent
 from theboard.agents.notetaker import NotetakerAgent
 from theboard.database import get_sync_db
 from theboard.events import (
+    ContextModifiedEvent,
+    HumanInputNeededEvent,
     MeetingCompletedEvent,
     MeetingConvergedEvent,
     MeetingFailedEvent,
+    MeetingPausedEvent,
+    MeetingResumedEvent,
     MeetingStartedEvent,
     RoundCompletedEvent,
     TopComment,
@@ -41,6 +45,9 @@ from theboard.schemas import MeetingStatus, StrategyType
 # Sprint 3: Import embedding service and compressor agent
 from theboard.agents.compressor import CompressorAgent
 from theboard.services.embedding_service import get_embedding_service
+
+# Sprint 4 Story 12: Import Redis manager for pause state
+from theboard.utils.redis_manager import get_redis_manager
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +108,8 @@ class MultiAgentMeetingWorkflow:
         enable_compression: bool = True,
         compression_threshold: int = 10000,
         strategy: StrategyType = StrategyType.SEQUENTIAL,
+        interactive: bool = False,
+        human_input_timeout: int = 300,
     ) -> None:
         """Initialize multi-agent workflow.
 
@@ -112,6 +121,8 @@ class MultiAgentMeetingWorkflow:
             enable_compression: Enable comment compression (default True, Sprint 3)
             compression_threshold: Context size threshold for lazy compression (default 10000 chars, Sprint 5)
             strategy: Execution strategy - sequential or greedy (default sequential, Sprint 4 Story 11)
+            interactive: Enable human-in-the-loop mode (default False, Sprint 4 Story 12)
+            human_input_timeout: Seconds to wait for human input before auto-continue (default 300 = 5 min)
         """
         self.meeting_id = meeting_id
         self.model_override = model_override
@@ -121,6 +132,11 @@ class MultiAgentMeetingWorkflow:
         self.compression_threshold = compression_threshold
         self.compression_trigger_count = 0  # Track how many times compression was triggered
         self.strategy = strategy  # Sprint 4 Story 11: Execution strategy
+
+        # Sprint 4 Story 12: Human-in-the-loop settings
+        self.interactive = interactive
+        self.human_input_timeout = human_input_timeout
+        self.steering_context: str | None = None  # Human steering text (accumulated)
 
         # Sprint 4 Story 11: Token efficiency tracking
         self.round_metrics: list[RoundMetrics] = []
@@ -153,10 +169,11 @@ class MultiAgentMeetingWorkflow:
             self.compressor = None
 
         logger.info(
-            "MultiAgentMeetingWorkflow initialized: strategy=%s, novelty_threshold=%.2f, min_rounds=%d",
+            "MultiAgentMeetingWorkflow initialized: strategy=%s, novelty_threshold=%.2f, min_rounds=%d, interactive=%s",
             self.strategy.value,
             self.novelty_threshold,
             self.min_rounds,
+            self.interactive,
         )
 
     def _extract_insights(self) -> tuple[list[TopComment], dict[str, int], dict[str, int]]:
@@ -204,6 +221,234 @@ class MultiAgentMeetingWorkflow:
                 agent_participation[response.agent_name] = agent_participation.get(response.agent_name, 0) + 1
 
             return top_comments, category_dist, agent_participation
+
+    # =========================================================================
+    # Sprint 4 Story 12: Human-in-the-Loop Methods
+    # =========================================================================
+
+    async def _human_input_checkpoint(
+        self, round_num: int, avg_novelty: float, topic: str
+    ) -> str:
+        """Check for human input after round completion.
+
+        Sprint 4 Story 12: Human-in-the-loop checkpoint.
+
+        Emits human.input.needed event and waits for response via Redis.
+        Auto-continues after timeout if no human input received.
+
+        Args:
+            round_num: Current round number
+            avg_novelty: Average novelty score for this round
+            topic: Meeting topic
+
+        Returns:
+            Action to take: "continue", "stop", "paused", or "modify_context"
+        """
+        redis = get_redis_manager()
+
+        # Get current meeting state for event payload
+        with get_sync_db() as db:
+            stmt = select(Meeting).where(Meeting.id == self.meeting_id)
+            meeting = db.scalars(stmt).first()
+            total_comments = meeting.total_comments if meeting else 0
+
+        # Emit human.input.needed event
+        self.emitter.emit(
+            HumanInputNeededEvent(
+                meeting_id=self.meeting_id,
+                round_num=round_num,
+                reason="round_complete",
+                current_topic=topic,
+                total_comments=total_comments,
+                avg_novelty=avg_novelty,
+                timeout_seconds=self.human_input_timeout,
+            )
+        )
+
+        logger.info(
+            "Round %d complete. Waiting for human input (timeout=%ds)...",
+            round_num,
+            self.human_input_timeout,
+        )
+
+        # Poll for human input or timeout
+        # In a real implementation, this would use async event waiting
+        # For now, we use a polling approach with Redis state
+        import asyncio
+
+        poll_interval = 1.0  # Check every second
+        elapsed = 0.0
+
+        while elapsed < self.human_input_timeout:
+            # Check if meeting was paused by external command
+            pause_state = redis.get_pause_state(str(self.meeting_id))
+            if pause_state:
+                # Meeting was paused externally
+                self._handle_pause(round_num, pause_state.get("steering_context"))
+                return "paused"
+
+            # Check for human action stored in Redis
+            action_key = f"meeting:{self.meeting_id}:human_action"
+            action_data = redis.client.get(action_key)
+            if action_data:
+                action = action_data.decode("utf-8") if isinstance(action_data, bytes) else action_data
+                redis.client.delete(action_key)  # Clear action after reading
+
+                if action == "stop":
+                    return "stop"
+                elif action == "pause":
+                    self._handle_pause(round_num)
+                    return "paused"
+                elif action.startswith("modify_context:"):
+                    # Extract steering text
+                    steering = action[len("modify_context:"):]
+                    self._apply_steering_context(round_num, steering)
+                    return "continue"
+                else:
+                    return "continue"
+
+            await asyncio.sleep(poll_interval)
+            elapsed += poll_interval
+
+        # Timeout: auto-continue
+        logger.info(
+            "Human input timeout (%ds) - auto-continuing meeting",
+            self.human_input_timeout,
+        )
+        return "continue"
+
+    def _handle_pause(self, round_num: int, steering_context: str | None = None) -> None:
+        """Handle meeting pause request.
+
+        Sprint 4 Story 12: Pause meeting and update state.
+
+        Args:
+            round_num: Round number when paused
+            steering_context: Optional steering text from human
+        """
+        redis = get_redis_manager()
+
+        # Set pause state in Redis
+        redis.set_pause_state(
+            str(self.meeting_id),
+            round_num,
+            steering_context,
+            self.human_input_timeout,
+        )
+
+        # Update meeting status in database
+        with get_sync_db() as db:
+            stmt = select(Meeting).where(Meeting.id == self.meeting_id)
+            meeting = db.scalars(stmt).first()
+            if meeting:
+                meeting.status = MeetingStatus.PAUSED.value
+                meeting.current_round = round_num
+                db.commit()
+
+        # Emit paused event
+        self.emitter.emit(
+            MeetingPausedEvent(
+                meeting_id=self.meeting_id,
+                round_num=round_num,
+                paused_by="user",
+                reason=None,
+            )
+        )
+
+        logger.info("Meeting %s paused at round %d", self.meeting_id, round_num)
+
+    def _apply_steering_context(self, round_num: int, steering_text: str) -> None:
+        """Apply human steering context to meeting.
+
+        Sprint 4 Story 12: Add steering context for next rounds.
+
+        Args:
+            round_num: Current round number
+            steering_text: Human steering text to incorporate
+        """
+        # Accumulate steering context
+        if self.steering_context:
+            self.steering_context = f"{self.steering_context}\n\n[Round {round_num} Steering]: {steering_text}"
+        else:
+            self.steering_context = f"[Round {round_num} Steering]: {steering_text}"
+
+        # Emit context modified event
+        self.emitter.emit(
+            ContextModifiedEvent(
+                meeting_id=self.meeting_id,
+                round_num=round_num,
+                modification_type="add_constraint",
+                steering_text=steering_text,
+            )
+        )
+
+        logger.info(
+            "Applied steering context at round %d: %s",
+            round_num,
+            steering_text[:100] + "..." if len(steering_text) > 100 else steering_text,
+        )
+
+    def get_steering_context(self) -> str | None:
+        """Get accumulated steering context for agents.
+
+        Sprint 4 Story 12: Return steering text to include in agent prompts.
+
+        Returns:
+            Accumulated steering context or None
+        """
+        return self.steering_context
+
+    async def resume_from_pause(self) -> None:
+        """Resume a paused meeting.
+
+        Sprint 4 Story 12: Resume meeting from paused state.
+
+        Retrieves pause state from Redis and continues execution.
+        """
+        redis = get_redis_manager()
+        pause_state = redis.get_pause_state(str(self.meeting_id))
+
+        if not pause_state:
+            raise ValueError(f"Meeting {self.meeting_id} is not paused")
+
+        round_num = pause_state.get("round_num", 0)
+        steering = pause_state.get("steering_context")
+
+        # Apply any pending steering context
+        if steering:
+            self._apply_steering_context(round_num, steering)
+
+        # Clear pause state
+        redis.clear_pause_state(str(self.meeting_id))
+
+        # Update meeting status
+        with get_sync_db() as db:
+            stmt = select(Meeting).where(Meeting.id == self.meeting_id)
+            meeting = db.scalars(stmt).first()
+            if meeting:
+                meeting.status = MeetingStatus.RUNNING.value
+                db.commit()
+
+        # Emit resumed event
+        self.emitter.emit(
+            MeetingResumedEvent(
+                meeting_id=self.meeting_id,
+                round_num=round_num,
+                resumed_by="user",
+                context_modified=steering is not None,
+                steering_context=steering,
+            )
+        )
+
+        logger.info(
+            "Meeting %s resumed at round %d (steering=%s)",
+            self.meeting_id,
+            round_num,
+            "yes" if steering else "no",
+        )
+
+        # Continue execution from where we left off
+        await self.execute()
 
     async def execute(self) -> None:
         """Execute the multi-agent meeting workflow.
@@ -357,6 +602,26 @@ class MultiAgentMeetingWorkflow:
                             current_context_size,
                             self.compression_threshold,
                         )
+
+                # Sprint 4 Story 12: Human-in-the-loop checkpoint
+                if self.interactive:
+                    action = await self._human_input_checkpoint(round_num, avg_novelty, meeting.topic)
+                    if action == "stop":
+                        logger.info("Meeting stopped by human at round %d", round_num)
+                        # Update meeting with user-stopped reason
+                        with get_sync_db() as stop_db:
+                            stop_stmt = select(Meeting).where(Meeting.id == self.meeting_id)
+                            stop_meeting = stop_db.scalars(stop_stmt).first()
+                            if stop_meeting:
+                                stop_meeting.status = MeetingStatus.COMPLETED.value
+                                stop_meeting.current_round = round_num
+                                stop_meeting.stopping_reason = "Stopped by user"
+                                stop_db.commit()
+                        break
+                    elif action == "paused":
+                        # Meeting is paused, exit loop but don't complete
+                        logger.info("Meeting paused at round %d", round_num)
+                        return  # Exit execute() - meeting remains in PAUSED state
 
                 # Check convergence (only after minimum rounds)
                 if round_num >= self.min_rounds and avg_novelty < self.novelty_threshold:
