@@ -32,14 +32,14 @@
 
 **API Configuration**:
 - Running on: http://localhost:8001
-- Database: postgresql://delorenj:REDACTED_CREDENTIAL@localhost:5432/theboard
-- RabbitMQ: amqp://delorenj:REDACTED_CREDENTIAL@localhost:5673/
+- Database: postgresql://user:pass@localhost:5432/theboard
+- RabbitMQ: amqp://user:pass@localhost:5673/
 - Event emitter: rabbitmq
 
 **Consumer Configuration**:
 - Queue: theboard_meeting_trigger_queue
-- Database: postgresql://delorenj:REDACTED_CREDENTIAL@localhost:5432/theboard (local PostgreSQL)
-- RabbitMQ: amqp://delorenj:REDACTED_CREDENTIAL@localhost:5673/
+- Database: postgresql://user:pass@localhost:5432/theboard (local PostgreSQL)
+- RabbitMQ: amqp://user:pass@localhost:5673/
 
 ### Key Issues Resolved
 
@@ -47,7 +47,7 @@
 2. **TriggerType Enum**: Changed `TriggerType.SYSTEM` → `TriggerType.MANUAL` (SYSTEM doesn't exist)
 3. **EventConsumer API**: Used `.run()` method instead of non-existent `.start()`
 4. **Meeting Model**: Removed invalid `agents` parameter from Meeting constructor
-5. **Database Credentials**: Consumer now uses correct PostgreSQL credentials (delorenj:REDACTED_CREDENTIAL)
+5. **Database Credentials**: Consumer now uses correct PostgreSQL credentials (user:pass)
 6. **Database Location**: Consumer points to local PostgreSQL (port 5432) same as API
 
 ### Candybar Readiness
@@ -74,7 +74,7 @@ Event payload includes:
 
 Publish test event:
 ```bash
-RABBIT_URL="amqp://delorenj:REDACTED_CREDENTIAL@localhost:5673/" uv run python /tmp/test_meeting_trigger.py
+RABBIT_URL="amqp://user:pass@localhost:5673/" uv run python /tmp/test_meeting_trigger.py
 ```
 
 Check consumer logs:
