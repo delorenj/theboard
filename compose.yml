@@ -1,5 +1,7 @@
 services:
   # TheBoard Application
+  # Uses 33god shared RabbitMQ for event bus (bloodbank.events.v1)
+  # Keeps own postgres/redis/qdrant for theboard-specific data
   theboard:
     build:
       context: ../..  # Build from 33GOD root to access bloodbank
@@ -10,21 +12,19 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
       qdrant:
         condition: service_started
     environment:
       - DATABASE_URL=postgresql+psycopg://theboard:theboard_dev_pass@postgres:5432/theboard
       - REDIS_URL=redis://:theboard_redis_pass@redis:6379
-      - RABBITMQ_URL=amqp://theboard:theboard_rabbit_pass@rabbitmq:5672
+      - RABBITMQ_URL=amqp://${RABBITMQ_USER:-delorenj}:${RABBITMQ_PASS}@rabbitmq:5672
       - QDRANT_URL=http://qdrant:6333
       - THEBOARD_EVENT_EMITTER=rabbitmq
       - QDRANT_API_KEY=${QDRANT_API_KEY:-}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
     ports:
-      - "8000:8000" # Expose health endpoint and API
+      - "8000:8000"
     working_dir: /app
     command: >
       sh -c "
@@ -33,6 +33,7 @@ services:
       "
     networks:
       - theboard-network
+      - 33god-network  # Access shared RabbitMQ (hostname: rabbitmq)
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
@@ -43,7 +44,7 @@ services:
       start_period: 40s
     restart: unless-stopped
 
-  # PostgreSQL 15 - Persistent storage
+  # PostgreSQL 15 - Persistent storage (theboard-specific)
   postgres:
     image: postgres:15-alpine
     container_name: theboard-postgres
@@ -64,7 +65,7 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # Redis 7 - Session state cache
+  # Redis 7 - Session state cache (theboard-specific)
   redis:
     image: redis:7-alpine
     container_name: theboard-redis
@@ -82,28 +83,7 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # RabbitMQ 3.12 - Message broker for events
-  rabbitmq:
-    image: rabbitmq:3.12-management-alpine
-    container_name: theboard-rabbitmq
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-theboard}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-theboard_rabbit_pass}
-    ports:
-      - "${RABBITMQ_PORT:-5673}:5672"
-      - "${RABBITMQ_MANAGEMENT_PORT:-15673}:15672"
-    volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
-    networks:
-      - theboard-network
-    healthcheck:
-      test: ["CMD", "rabbitmqctl", "status"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
-  # Qdrant - Vector database for embeddings
+  # Qdrant - Vector database for embeddings (theboard-specific)
   qdrant:
     image: qdrant/qdrant:latest
     container_name: theboard-qdrant
@@ -126,11 +106,11 @@ volumes:
     driver: local
   redis_data:
     driver: local
-  rabbitmq_data:
-    driver: local
   qdrant_data:
     driver: local
 
 networks:
   theboard-network:
     driver: bridge
+  33god-network:
+    external: true
